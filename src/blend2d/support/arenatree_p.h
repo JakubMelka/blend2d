@@ -130,6 +130,80 @@ public:
   //! \name ArenaTree Functionality
   //! \{
 
+  //! Returns the minimum of the subtree rooted at the node.
+  NodeT* min(NodeT* node) const noexcept {
+      if (!node)
+          return nullptr;
+
+      while (node->hasLeft()) {
+          node = node->left();
+      }
+
+      return node;
+  }
+
+  //! Returns the maximum of the subtree rooted at the node.
+  NodeT* max(NodeT* node) const noexcept {
+      if (!node)
+          return nullptr;
+
+      while (node->hasRight()) {
+          node = node->right();
+      }
+
+      return node;
+  }
+
+  template<typename CompareT = CompareOp<SortOrder::kAscending>>
+  NodeT* prev(NodeT* node, const CompareT& cmp = CompareT()) const noexcept {
+      if (!node)
+          return nullptr;
+
+      if (node->hasLeft()) {
+          return max(node->left());
+      } else {
+          NodeT* current = _root;
+          NodeT* lastWalkRight = nullptr;
+          while (current) {
+              auto result = cmp(*current, *node);
+              if (result == 0) break;
+
+              const bool isCurrentLess = result < 0;
+
+              if (isCurrentLess)
+                  lastWalkRight = current;
+
+              node = node->_getChild(isCurrentLess);
+          }
+          return lastWalkRight;
+      }
+  }
+
+  template<typename CompareT = CompareOp<SortOrder::kAscending>>
+  NodeT* next(NodeT* node, const CompareT& cmp = CompareT()) const noexcept {
+      if (!node)
+          return nullptr;
+
+      if (node->hasRight()) {
+          return min(node->right());
+      } else {
+          NodeT* current = _root;
+          NodeT* lastWalkLeft = nullptr;
+          while (current) {
+              auto result = cmp(*current, *node);
+              if (result == 0) break;
+
+              const bool isCurrentLess = result < 0;
+
+              if (!isCurrentLess)
+                  lastWalkLeft = current;
+
+              node = node->_getChild(isCurrentLess);
+          }
+          return lastWalkLeft;
+      }
+  }
+
   //! Insert a node into the tree.
   template<typename CompareT = CompareOp<SortOrder::kAscending>>
   void insert(NodeT* node, const CompareT& cmp = CompareT()) noexcept {
@@ -302,15 +376,15 @@ public:
 
   template<typename KeyT, typename CompareT = CompareOp<SortOrder::kAscending>>
   BL_INLINE NodeT* get(const KeyT& key, const CompareT& cmp = CompareT()) const noexcept {
-    ArenaTreeNodeBase* node = _root;
+    NodeT* node = _root;
     while (node) {
-      auto result = cmp(*static_cast<const NodeT*>(node), key);
+      auto result = cmp(*node, key);
       if (result == 0) break;
 
       // Go left or right depending on the `result`.
-      node = node->_getChild(result < 0);
+      node = static_cast<NodeT*>(node->_getChild(result < 0));
     }
-    return static_cast<NodeT*>(node);
+    return node;
   }
 
   //! \}

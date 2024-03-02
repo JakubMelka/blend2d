@@ -199,6 +199,9 @@ set(BLEND2D_SRC_LIST
   blend2d/pattern.cpp
   blend2d/pattern.h
   blend2d/pattern_p.h
+  blend2d/polygonclipper.h
+  blend2d/polygonclipper_p.h
+  blend2d/polygonclipper.cpp
   blend2d/pixelconverter.cpp
   blend2d/pixelconverter_avx2.cpp
   blend2d/pixelconverter_sse2.cpp
@@ -406,6 +409,7 @@ set(BLEND2D_SRC_LIST
   blend2d/support/arenahashmap_p.h
   blend2d/support/arenalist_test.cpp
   blend2d/support/arenalist_p.h
+  blend2d/support/arenapriorityqueue_p.h
   blend2d/support/arenatree_test.cpp
   blend2d/support/arenatree_p.h
   blend2d/support/bitops_test.cpp
