@@ -19,6 +19,98 @@ BLPolygonClipper::~BLPolygonClipper() {
 
 namespace bl {
 
+static BL_INLINE double getSignedArea(const BLPoint& p1, const BLPoint& p2, const BLPoint& p3) {
+    return (p1.x * p2.y - p1.x * p3.y + p2.x * p3.y - p2.x * p1.y + p3.x * p1.y - p3.x * p2.y) * 0.5;
+}
+
+static BL_INLINE bool isClockwise(const BLPoint& p1, const BLPoint& p2, const BLPoint& p3) {
+    return getSignedArea(p1, p2, p3) < 0.0;
+}
+
+static BL_INLINE bool isCounterClockwise(const BLPoint& p1, const BLPoint& p2, const BLPoint& p3) {
+    return getSignedArea(p1, p2, p3) > 0.0;
+}
+
+static BL_INLINE bool isCollinear(const SweepEvent* a, const SweepEvent* b, double epsilon) {
+    const double area1 = getSignedArea(a->_pt, a->_opposite->_pt, b->_pt);
+    const double area2 = getSignedArea(a->_pt, a->_opposite->_pt, b->_opposite->_pt);
+    const double totalArea = blAbs(area1) + blAbs(area2);
+    return totalArea < epsilon;
+}
+
+struct SweepEventComparator {
+    int operator()(const SweepEvent* a, const SweepEvent* b) const noexcept {
+        if (a == b)
+            return 0;
+
+        // Compare x-coordinates first as we are sweeping from left to right.
+        if (a->_pt.x < b->_pt.x)
+            return -1;
+        if (a->_pt.x > b->_pt.x)
+            return 1;
+
+        // If we have the same coordinate, we process the point with the lower y-coordinate first.
+        if (a->_pt.y < b->_pt.y)
+            return -1;
+        if (a->_pt.y > b->_pt.y)
+            return 1;
+
+        // The point is the same in both events. We process right endpoint events first.
+        if (a->isLeft() != b->isLeft())
+            return a->isLeft() ? 1 : -1;
+
+        // Otherwise, the order should remain as it is in the status line.
+        return a->isPointAbove(b->_pt) ? -1 : 1;
+    }
+};
+
+struct StatusLineComparator {
+    BL_INLINE BL_CONSTEXPR StatusLineComparator(double epsilon) : _epsilon(epsilon) { }
+
+    int operator()(const SweepEvent* a, const SweepEvent* b) const noexcept {
+        if (a == b)
+            return 0;
+
+        SweepEventComparator sweepEventComparator;
+
+        if (!isCollinear(a, b, _epsilon)) {
+            // Segments are not collinear
+
+            // Both segments start at the same point. Determine which line is above the other
+            // in the sweep line by considering the second point of each segment. If b's right
+            // point is above the line segment defined by points (a->_pt, a->_opposite->_pt),
+            // it indicates that segment a precedes segment b in the status line.
+            if (a->_pt == b->_pt)
+                return a->isPointAbove(b->_opposite->_pt) ? -1 : 1;
+
+            // Test whether event a is inserted before event b in the priority queue.
+            // If a < b, then test whether b's start point is above the line segment
+            // defined by points (a->_pt, a->_opposite->_pt). If so, a must precede
+            // b in the status line. Otherwise, b must precede a in the status line.
+            if (sweepEventComparator(a, b) < 0) {
+                return a->isPointAbove(b->_pt) ? -1 : 1;
+            } else {
+                return b->isPointAbove(a->_pt) ? 1 : -1;
+            }
+        } else {
+            // Segments are collinear
+            if (a->_pt == b->_pt) {
+                if (a->_opposite->_pt == b->_opposite->_pt) {
+                    return a->isSubject() ? -1 : 1;
+                } else {
+                    return sweepEventComparator(a->_opposite, b->_opposite);
+                }
+            } else {
+                return sweepEventComparator(a, b);
+            }
+        }
+
+        return 0;
+    }
+
+    double _epsilon = 0.0;
+};
+
 PolygonClipperImpl::PolygonClipperImpl() noexcept :
     _memoryAllocator(MEMORY_BLOCK_SIZE) {
 
@@ -60,6 +152,22 @@ Segment SweepEvent::getSegment() const noexcept {
     } else {
         return Segment(_opposite->_pt, _pt);
     }
+}
+
+bool SweepEvent::isPointAbove(const BLPoint& pt) const noexcept
+{
+    if (isLeft())
+        return isCounterClockwise(_pt, _opposite->_pt, pt);
+    else
+        return isCounterClockwise(_opposite->_pt, _pt, pt);
+}
+
+bool SweepEvent::isPointBelow(const BLPoint& pt) const noexcept
+{
+    if (isLeft())
+        return isClockwise(_pt, _opposite->_pt, pt);
+    else
+        return isClockwise(_opposite->_pt, _pt, pt);
 }
 
 } // {bl}

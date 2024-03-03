@@ -60,6 +60,22 @@ struct SweepEvent {
     BL_INLINE BL_CONSTEXPR bool isSegmentNormal() const noexcept { return !blTestFlag(_flags, SweepEventFlags::kSegmentNonContributing | SweepEventFlags::kSegmentSameTransition | SweepEventFlags::kSegmentDifferentTransition); }
 
     Segment getSegment() const noexcept;
+
+    /// Determines whether a point (pt) is located above a line segment. The function
+    /// yields consistent results regardless of whether it is invoked from the left or
+    /// the right endpoint of the segment. If the point is above the segment (considering
+    /// the y-axis), it returns true; otherwise, it returns false.
+    /// \param pt The point to be tested.
+    /// \return A boolean value indicating whether the point is above the segment.
+    bool isPointAbove(const BLPoint& pt) const noexcept;
+
+    /// Determines whether a point (pt) is located below a line segment. The function
+    /// yields consistent results regardless of whether it is invoked from the left or
+    /// the right endpoint of the segment. If the point is below the segment (considering
+    /// the y-axis), it returns true; otherwise, it returns false.
+    /// \param pt The point to be tested.
+    /// \return A boolean value indicating whether the point is below the segment.
+    bool isPointBelow(const BLPoint& pt) const noexcept;
 };
 
 class SweepEventNode : public ArenaTreeNode<SweepEventNode> {
