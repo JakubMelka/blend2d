@@ -173,7 +173,7 @@ public:
               if (isCurrentLess)
                   lastWalkRight = current;
 
-              node = node->_getChild(isCurrentLess);
+              node = static_cast<NodeT*>(node->_getChild(isCurrentLess));
           }
           return lastWalkRight;
       }

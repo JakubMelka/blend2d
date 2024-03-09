@@ -632,6 +632,14 @@ static BL_INLINE_NODEBUG constexpr bool blTestFlag(const T& x, const T& y) noexc
   return ((typename std::underlying_type<T>::type)(x) & (typename std::underlying_type<T>::type)(y)) != 0;
 }
 
+template<typename T>
+static BL_INLINE_NODEBUG constexpr void blSetFlag(T& x, const T& y, bool on) noexcept {
+    if (on)
+        ((typename std::underlying_type<T>::type&)(x) |= (typename std::underlying_type<T>::type)(y));
+    else
+        ((typename std::underlying_type<T>::type&)(x) &= ~(typename std::underlying_type<T>::type)(y));
+}
+
 // TODO: Remove.
 template<typename T, typename F>
 static BL_INLINE_NODEBUG void blAssignFunc(T** dst, F f) noexcept { *(void**)dst = (void*)f; }

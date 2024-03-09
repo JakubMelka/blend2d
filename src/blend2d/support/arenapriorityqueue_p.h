@@ -36,7 +36,7 @@ public:
     template<typename CompareT = CompareOp<SortOrder::kAscending>>
     void remove(ArenaTreeNodeBase* node, const CompareT& cmp = CompareT()) noexcept {
         if (_min == node) {
-            _min = _tree.next(_min);
+            _min = _tree.next(_min, cmp);
         }
         _tree.remove(node, cmp);
     }
@@ -47,7 +47,7 @@ public:
 
         if (!_min) {
             _min = node;
-        } else if (NodeT* newMinNode = _tree.prev(_min)) {
+        } else if (NodeT* newMinNode = _tree.prev(_min, cmp)) {
             _min = newMinNode;
         }
     }

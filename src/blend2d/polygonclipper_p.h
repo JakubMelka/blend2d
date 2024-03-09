@@ -20,13 +20,29 @@
 
 namespace bl {
 
-//! Status flags of sweep event for polygon clipper.
+//! Status flags for sweep events in a polygon clipper.
 enum class SweepEventFlags : uint32_t {
     kNoFlags                        = 0u,
+
+    /// Indicates whether the sweep event is the start of a line segment.
+    /// If set, the event marks the start; if not, it is the end of the segment.
     kIsLeft                         = 0x00000001u,
+
+    /// Specifies the polygon to which the sweep event belongs. If set,
+    /// the event is part of the "subject" polygon; otherwise, it's part of
+    /// the "clipping" polygon.
     kIsSubject                      = 0x00000002u,
+
+    /// Determines the relative vertical position of the polygon containing
+    /// the edge. If set, the polygon is "below" the edge; otherwise, it is
+    /// "above" the edge.
     kIsInOut                        = 0x00000004u,
+
+    /// Indicates that the current edge is inside the other polygon.
+    /// For an edge belonging to the "subject" polygon, if set, it signifies
+    /// containment within the "clipping" polygon.
     kIsInside                       = 0x00000008u,
+
     kSegmentNonContributing         = 0x00000010u,
     kSegmentSameTransition          = 0x00000020u,
     kSegmentDifferentTransition     = 0x00000040u,
@@ -92,10 +108,20 @@ public:
     BLBooleanOperator getOperator() const noexcept;
     void setOperator(BLBooleanOperator newOperator) noexcept;
 
+    void addPolygonSegment(const Segment& segment, bool isSubject) noexcept;
+
+    /// Performs polygon clipping
+    BLResult perform() noexcept;
+
 private:
     static constexpr size_t MEMORY_BLOCK_SIZE = 4096;
 
+    bool isSelfOverlapping(SweepEventNode* sNode1, SweepEventNode* sNode2) const noexcept;
+    BLResult updateFlags(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept;
+
     BLBooleanOperator _operator = BL_BOOLEAN_OPERATOR_UNION;
+
+    size_t calculateMaximumNumberOfSweepEvents() const noexcept;
 
     SweepEvent* allocSweepEvent() noexcept;
     void freeSweepEvent(SweepEvent* event) noexcept;
@@ -106,6 +132,11 @@ private:
     ArenaAllocatorTmp<MEMORY_BLOCK_SIZE> _memoryAllocator;
     ArenaPool<SweepEvent> _sweepEventPool;
     ArenaPool<SweepEventNode> _sweepEventNodePool;
+
+    double _epsilon = 0.001;
+
+    size_t _subjectEdgeCount = 0;
+    size_t _clippingEdgeCount = 0;
 
     ArenaPriorityQueue<SweepEventNode> _q;
     ArenaTree<SweepEventNode> _s;
