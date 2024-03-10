@@ -78,6 +78,16 @@ static BL_INLINE BLPoint lineVectorIntersection(const BLPoint& p0, const BLPoint
   return p0 + cross(p1 - p0, v1) / cross(v0, v1) * v0;
 }
 
+//! Calculates the line equation a*x + b*y + c = 0 for a line defined by two points.
+static BL_INLINE void lineEquation(const BLPoint& p0, const BLPoint& p1, double& a, double& b, double& c) noexcept {
+    BLPoint tangentVector = p1 - p0;
+    BLPoint normalVector = unitVector(normal(tangentVector));
+
+    a = normalVector.x;
+    b = normalVector.y;
+    c = -dot(normalVector, p1);
+}
+
 //! \}
 
 //! \name Box/Rect Operations

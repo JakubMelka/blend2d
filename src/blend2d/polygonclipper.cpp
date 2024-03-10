@@ -7,6 +7,8 @@
 #include "api-impl.h"
 #include "polygonclipper.h"
 #include "polygonclipper_p.h"
+#include "geometry_p.h"
+#include "matrix.h"
 
 BLPolygonClipper::BLPolygonClipper() :
     _impl(new bl::PolygonClipperImpl()) {
@@ -164,6 +166,7 @@ void PolygonClipperImpl::addPolygonSegment(const Segment& segment, bool isSubjec
 
 BLResult PolygonClipperImpl::perform() noexcept
 {
+    BLResult result = BL_SUCCESS;
     size_t maxSweepEvents = calculateMaximumNumberOfSweepEvents();
     size_t currentSweepEventIndex = 0;
 
@@ -174,13 +177,12 @@ BLResult PolygonClipperImpl::perform() noexcept
         PolygonClipperImpl* _impl = nullptr;
     } guard(this);
 
-    while (!_q.empty()) {
-        if (++currentSweepEventIndex > maxSweepEvents) {
+    while (!_q.empty() && result == BL_SUCCESS) {
+        if (++currentSweepEventIndex > maxSweepEvents)
             return blTraceError(BL_ERROR_POLYGON_CLIPPER_MAX_SWEEP_EVENTS);
-        }
 
         // Pop current event from the queue
-        SweepEventNode* node = _q.pop();
+        SweepEventNode* node = _q.pop(SweepEventNodeComparator());
         SweepEvent* event = node->_event;
         freeSweepEventNode(node);
 
@@ -192,22 +194,55 @@ BLResult PolygonClipperImpl::perform() noexcept
             // points of the segments are in _s.
             SweepEventNode* sNode = allocSweepEventNode(event);
             _s.insert(sNode, comparator);
+            sNode->_event->_nodeS = sNode;
+            sNode->_event->_opposite->_nodeS = sNode;
 
             SweepEventNode* sPrev = _s.prev(sNode, comparator);
             SweepEventNode* sNext = _s.next(sNode, comparator);
 
-            BLResult updateResult = updateFlags(sPrev, sNode);
-            if (updateResult != BL_SUCCESS)
-                return updateResult;
+            updateResult(result, updateFlags(sPrev, sNode));
 
-            findIntersections(sPrev, sNode);
-            findIntersections(sNode, sNext);
+            updateResult(result, findIntersections(sPrev, sNode));
+            updateResult(result, findIntersections(sNode, sNext));
         } else {
             // End point of the segment
+            SweepEventNode* sNode = event->_nodeS;
+
+            StatusLineComparator comparator(_epsilon);
+            SweepEventNode* sPrev = _s.prev(sNode, comparator);
+            SweepEventNode* sNext = _s.next(sNode, comparator);
+
+            // Add edge to polygon connector
+            addResultEdge(event->_opposite);
+
+            // Clear sweep events
+            _s.remove(sNode, comparator);
+            freeSweepEventNode(sNode);
+            freeSweepEvent(event->_opposite);
+            freeSweepEvent(event);
+
+            updateResult(result, findIntersections(sPrev, sNext));
         }
     }
 
-    return BL_SUCCESS;
+    return result;
+}
+
+void PolygonClipperImpl::reset() noexcept
+{
+    StatusLineComparator comparator(_epsilon);
+
+    while (!_s.empty()) {
+        SweepEventNode* node = _s.root();
+        _s.remove(node, comparator);
+        freeSweepEventNode(node);
+    }
+
+    while (!_q.empty()) {
+        SweepEventNode* node = _q.pop(SweepEventNodeComparator());
+        freeSweepEvent(node->_event);
+        freeSweepEventNode(node);
+    }
 }
 
 bool PolygonClipperImpl::isSelfOverlapping(SweepEventNode* sNode1, SweepEventNode* sNode2) const noexcept {
@@ -219,9 +254,8 @@ BLResult PolygonClipperImpl::updateFlags(SweepEventNode* sPrev, SweepEventNode* 
         // This is an outer edge; simply clear the flags.
         sNode->_event->_flags &= ~(SweepEventFlags::kIsInOut | SweepEventFlags::kIsInside);
     } else if (!sPrev->_event->isSegmentNormal()) {
-        if (isSelfOverlapping(sPrev, sNode)) {
+        if (isSelfOverlapping(sPrev, sNode))
             return blTraceError(BL_ERROR_POLYGON_POLYGON_SELF_OVERLAPS);
-        }
 
         // At this point, things get more complex. The segments overlap with another segment.
         // Two edges of the same polygon overlapping implies an error; hence, overlapping
@@ -235,9 +269,8 @@ BLResult PolygonClipperImpl::updateFlags(SweepEventNode* sPrev, SweepEventNode* 
             blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInOut, false);
         }
 
-        if (isSelfOverlapping(sPrev, sPrevPrev)) {
+        if (isSelfOverlapping(sPrev, sPrevPrev))
             return blTraceError(BL_ERROR_POLYGON_POLYGON_SELF_OVERLAPS);
-        }
 
         if (sPrev->_event->isSubject() == sNode->_event->isSubject()) {
             blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInside, !sPrevPrev->_event->isInOut());
@@ -268,6 +301,198 @@ BLResult PolygonClipperImpl::updateFlags(SweepEventNode* sPrev, SweepEventNode* 
     return BL_SUCCESS;
 }
 
+BLResult PolygonClipperImpl::findIntersections(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept
+{
+    if (!sPrev || !sNode)
+        return BL_SUCCESS;
+
+    Segment s1(sPrev->_event->_pt, sPrev->_event->_opposite->_pt);
+    Segment s2(sNode->_event->_pt, sNode->_event->_opposite->_pt);
+
+    SegmentIntersection intersections;
+    BLResult intersectionResult = calculateSegmentIntersections(intersections, s1, s2);
+    if (intersectionResult != BL_SUCCESS)
+        return intersectionResult;
+
+    // TODO: Implement
+    return BL_SUCCESS;
+}
+
+BLResult PolygonClipperImpl::calculateSegmentIntersections(SegmentIntersection& intersections, const Segment& s1, const Segment& s2) const noexcept
+{
+    double vx1, vy1, d1;
+    double vx2, vy2, d2;
+    bl::Geometry::lineEquation(s1._p1, s1._p2, vx1, vy1, d1);
+    bl::Geometry::lineEquation(s2._p1, s2._p2, vx2, vy2, d2);
+
+    BLMatrix2D equationMatrix(vx1, vy1, vx2, vy2, d1, d2);
+    double determinant = equationMatrix.determinant();
+
+    auto getLineParameter = [this](const Segment& segment, const BLPoint& p) -> double {
+        BLPoint v = segment._p2 - segment._p1;
+        if (blAbs(v.x) > blAbs(v.y))
+            return (p.x - segment._p1.x) / (segment._p2.x - segment._p1.x);
+        else
+            return (p.y - segment._p1.y) / (segment._p2.y - segment._p1.y);
+    };
+
+    if (blAbs(determinant) < _epsilon) {
+        // The segments are collinear. However, are they overlapping?
+        // They are considered overlapping if their distance is less than epsilon.
+        if (blAbs(d1 - d2) < _epsilon) {
+            BLPoint v = s1._p2 - s1._p1;
+            double angle = bl::Math::atan2(v.y, v.x);
+            BLMatrix2D rotationMatrix;
+            rotationMatrix.resetToRotation(-angle, s1._p1);
+
+            Segment rs1(rotationMatrix.mapPoint(s1._p1), rotationMatrix.mapPoint(s1._p2));
+            Segment rs2(rotationMatrix.mapPoint(s2._p1), rotationMatrix.mapPoint(s2._p2));
+
+            double xMin1 = blMin(rs1._p1.x, rs1._p2.x);
+            double xMax1 = blMax(rs1._p1.x, rs1._p2.x);
+            double xMin2 = blMin(rs2._p1.x, rs2._p2.x);
+            double xMax2 = blMax(rs2._p1.x, rs2._p2.x);
+
+            double overlapStart = blMax(xMin1, xMin2);
+            double overlapEnd = blMin(xMax1, xMax2);
+
+            // Intervals can also overlap at a single point. However, since this is not significant
+            // for our algorithm, we disregard such cases and focus only on non-empty intervals.
+            if (overlapStart < overlapEnd - _epsilon) {
+                BLMatrix2D rotationMatrixInverted = rotationMatrix;
+                BLResult invertResult = rotationMatrixInverted.invert();
+                if (invertResult != BL_SUCCESS)
+                    return invertResult;
+
+                BLPoint pt1 = rotationMatrixInverted.mapPoint(BLPoint(overlapStart, 0));
+                BLPoint pt2 = rotationMatrixInverted.mapPoint(BLPoint(overlapEnd, 0));
+
+                auto processIntersections = [&, this](const Segment& s, BLPoint& intPt1, BLPoint& intPt2,
+                                                      SegmentIntersectionFlags flagStart,
+                                                      SegmentIntersectionFlags flagInterior,
+                                                      SegmentIntersectionFlags flagEnd) {
+                    double lineParameter1 = getLineParameter(s, pt1);
+                    double lineParameter2 = getLineParameter(s, pt2);
+
+                    if (lineParameter1 > lineParameter2)
+                        std::swap(lineParameter1, lineParameter2);
+
+                    const double segmentLength = s.getLength();
+
+                    const double lineOrdinate1 = segmentLength * lineParameter1;
+                    const double lineOrdinate2 = segmentLength * lineParameter2;
+
+                    // Clamp ordinates
+                    if (lineOrdinate1 < _epsilon)
+                        lineParameter1 = 0.0;
+                    if (lineOrdinate1 > segmentLength - _epsilon)
+                        lineParameter1 = 1.0;
+                    if (lineOrdinate2 < _epsilon)
+                        lineParameter2 = 0.0;
+                    if (lineOrdinate2 > segmentLength - _epsilon)
+                        lineParameter2 = 1.0;
+
+                    if (lineParameter1 == 0.0) {
+                        intersections.flags |= flagStart;
+                        intPt1 = s._p1;
+                    } else {
+                        intersections.flags |= flagInterior;
+                        intPt1 = pt1;
+                    }
+
+                    if (lineParameter2 == 1.0) {
+                        intersections.flags |= flagEnd;
+                        intPt2 = s._p2;
+                    } else {
+                        intersections.flags |= flagInterior;
+                        intPt2 = s._p2;
+                    }
+                };
+
+                processIntersections(s1, intersections.ptLeft1, intersections.ptLeft2,
+                                     SegmentIntersectionFlags::kIntersectionLine1Start,
+                                     SegmentIntersectionFlags::kIntersectionLine1Interior,
+                                     SegmentIntersectionFlags::kIntersectionLine1End);
+                processIntersections(s2, intersections.ptRight1, intersections.ptRight2,
+                                     SegmentIntersectionFlags::kIntersectionLine2Start,
+                                     SegmentIntersectionFlags::kIntersectionLine2Interior,
+                                     SegmentIntersectionFlags::kIntersectionLine2End);
+
+                intersections.flags |= SegmentIntersectionFlags::kOverlapped;
+            }
+        }
+    } else {
+        BLResult invertResult = equationMatrix.invert();
+        if (invertResult != BL_SUCCESS)
+            return invertResult;
+
+        BLPoint pt(equationMatrix.m20, equationMatrix.m21);
+
+        double lineParameter1 = getLineParameter(s1, pt);
+        double lineParameter2 = getLineParameter(s2, pt);
+
+        const double segment1Length = s1.getLength();
+        const double segment2Length = s2.getLength();
+
+        const double lineOrdinate1 = segment1Length * lineParameter1;
+        const double lineOrdinate2 = segment2Length * lineParameter2;
+
+        // Intersection point must lie on both lines.
+        if (lineOrdinate1 < -_epsilon || lineOrdinate1 > segment1Length + _epsilon ||
+            lineOrdinate2 < -_epsilon || lineOrdinate2 > segment2Length + _epsilon)
+            return BL_SUCCESS;
+
+        // Clamp ordinates
+        if (lineOrdinate1 < _epsilon)
+            lineParameter1 = 0.0;
+        if (lineOrdinate1 > segment1Length - _epsilon)
+            lineParameter1 = 1.0;
+        if (lineOrdinate2 < _epsilon)
+            lineParameter2 = 0.0;
+        if (lineOrdinate2 > segment2Length - _epsilon)
+            lineParameter2 = 1.0;
+
+        if (lineParameter1 == 0.0) {
+            intersections.flags |= SegmentIntersectionFlags::kIntersectionLine1Start;
+            intersections.ptLeft1 = s1._p1;
+            intersections.ptLeft2 = s1._p1;
+        } else if (lineParameter1 == 1.0) {
+            intersections.flags |= SegmentIntersectionFlags::kIntersectionLine1End;
+            intersections.ptLeft1 = s1._p2;
+            intersections.ptLeft2 = s1._p2;
+        } else {
+            intersections.flags |= SegmentIntersectionFlags::kIntersectionLine1Interior;
+            intersections.ptLeft1 = pt;
+            intersections.ptLeft2 = pt;
+        }
+
+        if (lineParameter2 == 0.0) {
+            intersections.flags |= SegmentIntersectionFlags::kIntersectionLine2Start;
+            intersections.ptRight1 = s2._p1;
+            intersections.ptRight2 = s2._p1;
+        } else if (lineParameter2 == 1.0) {
+            intersections.flags |= SegmentIntersectionFlags::kIntersectionLine2End;
+            intersections.ptRight1 = s2._p2;
+            intersections.ptRight2 = s2._p2;
+        } else {
+            intersections.flags |= SegmentIntersectionFlags::kIntersectionLine2Interior;
+            intersections.ptRight1 = pt;
+            intersections.ptRight2 = pt;
+        }
+    }
+
+    if (intersections.flags == SegmentIntersectionFlags::kNoFlags)
+        intersections.flags |= SegmentIntersectionFlags::kNoIntersection;
+
+    return BL_SUCCESS;
+}
+
+void PolygonClipperImpl::updateResult(BLResult& oldResult, BLResult newResult) const noexcept
+{
+    if (oldResult == BL_SUCCESS)
+        oldResult = newResult;
+}
+
 size_t PolygonClipperImpl::calculateMaximumNumberOfSweepEvents() const noexcept {
     size_t result = 0;
     size_t totalEdgeCount = _subjectEdgeCount + _clippingEdgeCount;
@@ -294,23 +519,23 @@ size_t PolygonClipperImpl::calculateMaximumNumberOfSweepEvents() const noexcept 
 
 SweepEvent* PolygonClipperImpl::allocSweepEvent() noexcept {
     SweepEvent* event = _sweepEventPool.alloc(_memoryAllocator);
-    new (event) SweepEvent();
+    blCallCtor(*event);
     return event;
 }
 
 void PolygonClipperImpl::freeSweepEvent(SweepEvent* event) noexcept {
-    event->~SweepEvent();
+    blCallDtor(*event);
     _sweepEventPool.free(event);
 }
 
 SweepEventNode* PolygonClipperImpl::allocSweepEventNode(SweepEvent* event) noexcept {
     SweepEventNode* node = _sweepEventNodePool.alloc(_memoryAllocator);
-    new (node) SweepEventNode(event);
+    blCallCtor(*node, event);
     return node;
 }
 
 void PolygonClipperImpl::freeSweepEventNode(SweepEventNode* node) noexcept {
-    node->~SweepEventNode();
+    blCallDtor(*node);
     _sweepEventNodePool.free(node);
 }
 
