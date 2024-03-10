@@ -54,13 +54,18 @@ struct Segment {
     inline constexpr Segment() noexcept = default;
     inline constexpr Segment(BLPoint p1, BLPoint p2) noexcept : _p1(p1), _p2(p2) { }
 
+    double getLength() const noexcept;
+
     BLPoint _p1;
     BLPoint _p2;
 };
 
+class SweepEventNode;
+
 struct SweepEvent {
     BLPoint _pt;
     SweepEvent* _opposite{};
+    SweepEventNode* _nodeS{};
     SweepEventFlags _flags{};
 
     BL_INLINE BL_CONSTEXPR bool isLeft() const noexcept { return blTestFlag(_flags, SweepEventFlags::kIsLeft); }
@@ -94,6 +99,31 @@ struct SweepEvent {
     bool isPointBelow(const BLPoint& pt) const noexcept;
 };
 
+enum class SegmentIntersectionFlags : uint32_t {
+    kNoFlags                    = 0x0000,
+    kNoIntersection             = 0x0001,
+    kIntersectionLine1Start     = 0x0002,
+    kIntersectionLine2Start     = 0x0004,
+    kIntersectionLine1End       = 0x0008,
+    kIntersectionLine2End       = 0x0010,
+    kIntersectionLine1Interior  = 0x0020,
+    kIntersectionLine2Interior  = 0x0040,
+    kOverlapped                 = 0x0080,
+};
+
+BL_DEFINE_ENUM_FLAGS(SegmentIntersectionFlags)
+
+struct SegmentIntersection
+{
+    BLPoint ptLeft1;
+    BLPoint ptLeft2;
+
+    BLPoint ptRight1;
+    BLPoint ptRight2;
+
+    SegmentIntersectionFlags flags = SegmentIntersectionFlags();
+};
+
 class SweepEventNode : public ArenaTreeNode<SweepEventNode> {
 public:
     BL_INLINE SweepEventNode(SweepEvent* event) : _event(event) { }
@@ -113,13 +143,16 @@ public:
     /// Performs polygon clipping
     BLResult perform() noexcept;
 
+    void reset() noexcept;
+
 private:
     static constexpr size_t MEMORY_BLOCK_SIZE = 4096;
 
     bool isSelfOverlapping(SweepEventNode* sNode1, SweepEventNode* sNode2) const noexcept;
     BLResult updateFlags(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept;
-
-    BLBooleanOperator _operator = BL_BOOLEAN_OPERATOR_UNION;
+    BLResult findIntersections(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept;
+    BLResult calculateSegmentIntersections(SegmentIntersection& intersections, const Segment& s1, const Segment& s2) const noexcept;
+    void updateResult(BLResult& oldResult, BLResult newResult) const noexcept;
 
     size_t calculateMaximumNumberOfSweepEvents() const noexcept;
 
@@ -129,11 +162,14 @@ private:
     SweepEventNode* allocSweepEventNode(SweepEvent* event) noexcept;
     void freeSweepEventNode(SweepEventNode* node) noexcept;
 
+    BLBooleanOperator _operator = BL_BOOLEAN_OPERATOR_UNION;
+
     ArenaAllocatorTmp<MEMORY_BLOCK_SIZE> _memoryAllocator;
     ArenaPool<SweepEvent> _sweepEventPool;
     ArenaPool<SweepEventNode> _sweepEventNodePool;
 
     double _epsilon = 0.001;
+    double _epsilonLineParameter = 0.0001;
 
     size_t _subjectEdgeCount = 0;
     size_t _clippingEdgeCount = 0;
