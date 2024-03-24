@@ -112,8 +112,10 @@ struct StatusLineComparator {
                 return sweepEventComparator(a, b);
             }
         }
+    }
 
-        return 0;
+    inline int operator()(const SweepEventNode& a, const SweepEventNode& b) const noexcept {
+        return operator()(a._event, b._event);
     }
 
     double _epsilon = 0.0;
@@ -306,16 +308,96 @@ BLResult PolygonClipperImpl::findIntersections(SweepEventNode* sPrev, SweepEvent
     if (!sPrev || !sNode)
         return BL_SUCCESS;
 
+    BL_ASSERT(sPrev->_event->isLeft());
+    BL_ASSERT(sNode->_event->isLeft());
+
     Segment s1(sPrev->_event->_pt, sPrev->_event->_opposite->_pt);
     Segment s2(sNode->_event->_pt, sNode->_event->_opposite->_pt);
 
     SegmentIntersection intersections;
     BLResult intersectionResult = calculateSegmentIntersections(intersections, s1, s2);
+
     if (intersectionResult != BL_SUCCESS)
         return intersectionResult;
+    if (intersections.isNoIntersection())
+        return BL_SUCCESS;
 
-    // TODO: Implement
+    if (intersections.isOverlapped()) {
+        // Segments overlap. We must verify that they originate from
+        // different polygons. We do not support overlapping segments from
+        // the same polygon.
+        if (sPrev->_event->isSubject() == sNode->_event->isSubject())
+            return BL_ERROR_POLYGON_POLYGON_SELF_OVERLAPS;
+
+        SweepEventFlags line1Flags = SweepEventFlags::kSegmentNonContributing;
+        SweepEventFlags line2Flags = (sPrev->_event->isInOut() == sNode->_event->isInOut()) ? SweepEventFlags::kSegmentSameTransition : SweepEventFlags::kSegmentDifferentTransition;
+
+        // Is one segment contained within the other?
+        if (intersections.isLine1ContainedWithinLine2()) {
+            sPrev->_event->_flags |= line1Flags;
+            sPrev->_event->_opposite->_flags |= line1Flags;
+        } else {
+            // The line must be split. If the line needs to be divided into three segments,
+            // it will be split into only two, with the second split deferred until the next
+            // sweep event.
+
+            if (blTestFlag(intersections.flags, SegmentIntersectionFlags::kIntersectionLine1Start)) {
+                sPrev->_event->_flags |= line1Flags;
+                sPrev->_event->_opposite->_flags |= line1Flags;
+            }
+
+            const bool useRight = !blTestFlag(intersections.flags, SegmentIntersectionFlags::kIntersectionLine1End);
+            divideSegment(sPrev, useRight ? intersections.ptLeft1 : intersections.ptRight1);
+        }
+
+        // Is one segment contained within the other?
+        if (intersections.isLine2ContainedWithinLine1()) {
+            sNode->_event->_flags |= line2Flags;
+            sNode->_event->_opposite->_flags |= line2Flags;
+        } else {
+            // The line must be split. If the line needs to be divided into three segments,
+            // it will be split into only two, with the second split deferred until the next
+            // sweep event.
+
+            if (blTestFlag(intersections.flags, SegmentIntersectionFlags::kIntersectionLine2Start)) {
+                sPrev->_event->_flags |= line2Flags;
+                sPrev->_event->_opposite->_flags |= line2Flags;
+            }
+
+            const bool useRight = !blTestFlag(intersections.flags, SegmentIntersectionFlags::kIntersectionLine1End);
+            divideSegment(sPrev, useRight ? intersections.ptLeft2 : intersections.ptRight2);
+        }
+    } else {
+        if (blTestFlag(intersections.flags, SegmentIntersectionFlags::kIntersectionLine1Interior))
+            divideSegment(sPrev, intersections.ptLeft1);
+        if (blTestFlag(intersections.flags, SegmentIntersectionFlags::kIntersectionLine2Interior))
+            divideSegment(sNode, intersections.ptLeft2);
+    }
+
     return BL_SUCCESS;
+}
+
+void PolygonClipperImpl::divideSegment(SweepEventNode* sNode, const BLPoint& point) noexcept
+{
+    SweepEvent* e = sNode->_event;
+    SweepEvent* l = allocSweepEvent();
+    SweepEvent* r = allocSweepEvent();
+
+    l->_opposite = e->_opposite;
+    l->_pt = point;
+    l->_flags = e->_flags & (SweepEventFlags::kIsSubject | SweepEventFlags::kIsInOut | SweepEventFlags::kIsInside);
+    l->_flags |= SweepEventFlags::kIsLeft;
+
+    r->_opposite = e;
+    r->_pt = point;
+    r->_flags = e->_flags & (SweepEventFlags::kIsSubject | SweepEventFlags::kIsInOut | SweepEventFlags::kIsInside);
+    r->_nodeS = e->_nodeS;
+
+    e->_opposite->_opposite = l;
+    e->_opposite = r;
+
+    _q.insert(allocSweepEventNode(l), SweepEventNodeComparator());
+    _q.insert(allocSweepEventNode(r), SweepEventNodeComparator());
 }
 
 BLResult PolygonClipperImpl::calculateSegmentIntersections(SegmentIntersection& intersections, const Segment& s1, const Segment& s2) const noexcept
@@ -383,14 +465,8 @@ BLResult PolygonClipperImpl::calculateSegmentIntersections(SegmentIntersection& 
                     const double lineOrdinate2 = segmentLength * lineParameter2;
 
                     // Clamp ordinates
-                    if (lineOrdinate1 < _epsilon)
-                        lineParameter1 = 0.0;
-                    if (lineOrdinate1 > segmentLength - _epsilon)
-                        lineParameter1 = 1.0;
-                    if (lineOrdinate2 < _epsilon)
-                        lineParameter2 = 0.0;
-                    if (lineOrdinate2 > segmentLength - _epsilon)
-                        lineParameter2 = 1.0;
+                    lineParameter1 = clampParameter(lineParameter1, lineOrdinate1, segmentLength);
+                    lineParameter2 = clampParameter(lineParameter2, lineOrdinate2, segmentLength);
 
                     if (lineParameter1 == 0.0) {
                         intersections.flags |= flagStart;
@@ -443,14 +519,8 @@ BLResult PolygonClipperImpl::calculateSegmentIntersections(SegmentIntersection& 
             return BL_SUCCESS;
 
         // Clamp ordinates
-        if (lineOrdinate1 < _epsilon)
-            lineParameter1 = 0.0;
-        if (lineOrdinate1 > segment1Length - _epsilon)
-            lineParameter1 = 1.0;
-        if (lineOrdinate2 < _epsilon)
-            lineParameter2 = 0.0;
-        if (lineOrdinate2 > segment2Length - _epsilon)
-            lineParameter2 = 1.0;
+        lineParameter1 = clampParameter(lineParameter1, lineOrdinate1, segment1Length);
+        lineParameter2 = clampParameter(lineParameter2, lineOrdinate2, segment2Length);
 
         if (lineParameter1 == 0.0) {
             intersections.flags |= SegmentIntersectionFlags::kIntersectionLine1Start;
@@ -491,6 +561,16 @@ void PolygonClipperImpl::updateResult(BLResult& oldResult, BLResult newResult) c
 {
     if (oldResult == BL_SUCCESS)
         oldResult = newResult;
+}
+
+double PolygonClipperImpl::clampParameter(double parameter, double ordinate, double segmentLength) const noexcept
+{
+    if (ordinate < _epsilon)
+        parameter = 0.0;
+    if (ordinate > segmentLength - _epsilon)
+        parameter = 1.0;
+
+    return parameter;
 }
 
 size_t PolygonClipperImpl::calculateMaximumNumberOfSweepEvents() const noexcept {
@@ -539,6 +619,37 @@ void PolygonClipperImpl::freeSweepEventNode(SweepEventNode* node) noexcept {
     _sweepEventNodePool.free(node);
 }
 
+void PolygonClipperImpl::addResultEdge(SweepEvent* edge)
+{
+    BL_ASSERT(edge->isLeft());
+
+    if (edge->isSegmentNormal()) {
+        switch (_operator) {
+        case BL_BOOLEAN_OPERATOR_UNION:
+            if (!edge->isInside())
+                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        case BL_BOOLEAN_OPERATOR_INTERSECTION:
+            if (edge->isInside())
+                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        case BL_BOOLEAN_OPERATOR_DIFFERENCE:
+            if ((edge->isSubject() && !edge->isInside()) || (edge->isClipping() && edge->isInside()))
+                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        case BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE:
+            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        }
+    } else if (edge->isSegmentSameTransition()) {
+        if (_operator == BL_BOOLEAN_OPERATOR_UNION || _operator == BL_BOOLEAN_OPERATOR_INTERSECTION)
+            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+    } else if (edge->isSegmentDifferentTransition()) {
+        if (_operator == BL_BOOLEAN_OPERATOR_DIFFERENCE)
+            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+    }
+}
+
 Segment SweepEvent::getSegment() const noexcept {
     if (isLeft()) {
         return Segment(_pt, _opposite->_pt);
@@ -561,6 +672,33 @@ bool SweepEvent::isPointBelow(const BLPoint& pt) const noexcept
         return isClockwise(_pt, _opposite->_pt, pt);
     else
         return isClockwise(_opposite->_pt, _pt, pt);
+}
+
+constexpr bool SegmentIntersection::isLine1ContainedWithinLine2() const
+{
+    return blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine1Start) &&
+           blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine1End);
+}
+
+constexpr bool SegmentIntersection::isLine2ContainedWithinLine1() const
+{
+    return blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine2Start) &&
+           blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine2End);
+}
+
+constexpr bool SegmentIntersection::isNoIntersection() const
+{
+    return blTestFlag(flags, SegmentIntersectionFlags::kNoIntersection);
+}
+
+constexpr bool SegmentIntersection::isOverlapped() const
+{
+    return blTestFlag(flags, SegmentIntersectionFlags::kOverlapped);
+}
+
+double Segment::getLength() const noexcept
+{
+    return bl::Geometry::length(_p1, _p1);
 }
 
 } // {bl}

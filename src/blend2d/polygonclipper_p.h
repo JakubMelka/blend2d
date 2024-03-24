@@ -122,6 +122,11 @@ struct SegmentIntersection
     BLPoint ptRight2;
 
     SegmentIntersectionFlags flags = SegmentIntersectionFlags();
+
+    constexpr bool isLine1ContainedWithinLine2() const;
+    constexpr bool isLine2ContainedWithinLine1() const;
+    constexpr bool isNoIntersection() const;
+    constexpr bool isOverlapped() const;
 };
 
 class SweepEventNode : public ArenaTreeNode<SweepEventNode> {
@@ -129,6 +134,11 @@ public:
     BL_INLINE SweepEventNode(SweepEvent* event) : _event(event) { }
 
     SweepEvent* _event;
+};
+
+class PolygonConnector {
+public:
+    void addEdge(const BLPoint& p1, const BLPoint& p2);
 };
 
 class PolygonClipperImpl {
@@ -150,9 +160,19 @@ private:
 
     bool isSelfOverlapping(SweepEventNode* sNode1, SweepEventNode* sNode2) const noexcept;
     BLResult updateFlags(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept;
+
+    /// Finds intersections in the events corresponding to sweep event nodes.
+    /// Nodes must always contain pointers to left sweep events.
+    /// \param sPrev Previous node containing a pointer to a sweep event on the sweep line.
+    /// \param sNode Next node containing a pointer to a sweep event on the sweep line.
+    /// \return BLResult indicating the result of the intersection finding process.
     BLResult findIntersections(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept;
+
+    void divideSegment(SweepEventNode* sNode, const BLPoint& point) noexcept;
+
     BLResult calculateSegmentIntersections(SegmentIntersection& intersections, const Segment& s1, const Segment& s2) const noexcept;
     void updateResult(BLResult& oldResult, BLResult newResult) const noexcept;
+    double clampParameter(double parameter, double ordinate, double segmentLength) const noexcept;
 
     size_t calculateMaximumNumberOfSweepEvents() const noexcept;
 
@@ -161,6 +181,12 @@ private:
 
     SweepEventNode* allocSweepEventNode(SweepEvent* event) noexcept;
     void freeSweepEventNode(SweepEventNode* node) noexcept;
+
+    /// Based on the operator (intersection, union, difference,
+    /// symmetric difference), it is decided whether to add the edge to the resulting
+    /// polygon. Event must represent the starting point.
+    /// \param edge The edge we want to insert
+    void addResultEdge(SweepEvent* edge);
 
     BLBooleanOperator _operator = BL_BOOLEAN_OPERATOR_UNION;
 
@@ -176,6 +202,7 @@ private:
 
     ArenaPriorityQueue<SweepEventNode> _q;
     ArenaTree<SweepEventNode> _s;
+    PolygonConnector _connector;
 };
 
 } // {bl}
