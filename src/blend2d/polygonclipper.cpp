@@ -10,13 +10,25 @@
 #include "geometry_p.h"
 #include "matrix.h"
 
-BLPolygonClipper::BLPolygonClipper() :
-    _impl(new bl::PolygonClipperImpl()) {
+BLPolygonClipper::BLPolygonClipper() noexcept :
+    _impl(nullptr) {
+    _impl = reinterpret_cast<bl::PolygonClipperImpl*>(_buffer);
 
+    void* staticData = _buffer + sizeof(bl::PolygonClipperImpl);
+    constexpr size_t staticSize = MEMORY_BLOCK_SIZE - sizeof(bl::PolygonClipperImpl);
+    blCallCtor(*_impl, MEMORY_BLOCK_SIZE, staticData, staticSize);
 }
 
-BLPolygonClipper::~BLPolygonClipper() {
-    delete _impl;
+BLPolygonClipper::~BLPolygonClipper() noexcept {
+    blCallDtor(*_impl);
+}
+
+void BLPolygonClipper::setOperator(BLBooleanOperator booleanOperator) noexcept {
+    _impl->setOperator(booleanOperator);
+}
+
+const BLPath& BLPolygonClipper::getPath() const noexcept {
+    return _impl->getPath();
 }
 
 namespace bl {
@@ -121,8 +133,9 @@ struct StatusLineComparator {
     double _epsilon = 0.0;
 };
 
-PolygonClipperImpl::PolygonClipperImpl() noexcept :
-    _memoryAllocator(MEMORY_BLOCK_SIZE) {
+PolygonClipperImpl::PolygonClipperImpl(size_t blockSize, void* staticData, size_t staticSize) noexcept :
+    _memoryAllocator(blockSize, 1, staticData, staticSize),
+    _connector(_memoryAllocator) {
 
 }
 
@@ -245,6 +258,8 @@ void PolygonClipperImpl::reset() noexcept
         freeSweepEvent(node->_event);
         freeSweepEventNode(node);
     }
+
+    _connector.reset();
 }
 
 bool PolygonClipperImpl::isSelfOverlapping(SweepEventNode* sNode1, SweepEventNode* sNode2) const noexcept {
@@ -658,47 +673,145 @@ Segment SweepEvent::getSegment() const noexcept {
     }
 }
 
-bool SweepEvent::isPointAbove(const BLPoint& pt) const noexcept
-{
+bool SweepEvent::isPointAbove(const BLPoint& pt) const noexcept {
     if (isLeft())
         return isCounterClockwise(_pt, _opposite->_pt, pt);
     else
         return isCounterClockwise(_opposite->_pt, _pt, pt);
 }
 
-bool SweepEvent::isPointBelow(const BLPoint& pt) const noexcept
-{
+bool SweepEvent::isPointBelow(const BLPoint& pt) const noexcept {
     if (isLeft())
         return isClockwise(_pt, _opposite->_pt, pt);
     else
         return isClockwise(_opposite->_pt, _pt, pt);
 }
 
-constexpr bool SegmentIntersection::isLine1ContainedWithinLine2() const
-{
+constexpr bool SegmentIntersection::isLine1ContainedWithinLine2() const {
     return blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine1Start) &&
            blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine1End);
 }
 
-constexpr bool SegmentIntersection::isLine2ContainedWithinLine1() const
-{
+constexpr bool SegmentIntersection::isLine2ContainedWithinLine1() const {
     return blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine2Start) &&
            blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine2End);
 }
 
-constexpr bool SegmentIntersection::isNoIntersection() const
-{
+constexpr bool SegmentIntersection::isNoIntersection() const {
     return blTestFlag(flags, SegmentIntersectionFlags::kNoIntersection);
 }
 
-constexpr bool SegmentIntersection::isOverlapped() const
-{
+constexpr bool SegmentIntersection::isOverlapped() const {
     return blTestFlag(flags, SegmentIntersectionFlags::kOverlapped);
 }
 
-double Segment::getLength() const noexcept
-{
+double Segment::getLength() const noexcept {
     return bl::Geometry::length(_p1, _p1);
+}
+
+PolygonConnector::~PolygonConnector() noexcept {
+    reset();
+}
+
+void PolygonConnector::reset() noexcept {
+    while (!_openPolygons.empty()) {
+        removePolygonPath(_openPolygons.first());
+    }
+}
+
+void PolygonConnector::addEdge(const BLPoint& p1, const BLPoint& p2) noexcept {
+    if (p1 == p2)
+        return;
+
+    FindPathResult f1 = find(p1);
+    FindPathResult f2 = find(p2);
+
+    if (!f1._node && !f2._node) {
+        // It is a completely new edge, we will create a new polygon and
+        // add edge points to the polygon.
+        PolygonConnectorPathNode* pathNode = _poolPaths.alloc(_allocator);
+        blCallCtor(*pathNode);
+
+        PolygonConnectorPathItemNode* startItemNode = _poolItemNodes.alloc(_allocator);
+        PolygonConnectorPathItemNode* endItemNode = _poolItemNodes.alloc(_allocator);
+
+        blCallCtor(*startItemNode, p1);
+        blCallCtor(*endItemNode, p2);
+
+        pathNode->append(startItemNode);
+        pathNode->append(endItemNode);
+
+        _openPolygons.append(pathNode);
+    } else if (f1._node && f1._node == f2._node) {
+        // We have closed the path. Now, just add polygon
+        // to the final path. Then, remove polygon.
+        PolygonConnectorPathNode* pathNode = f1._node;
+
+        _path.moveTo(pathNode->front()->_pt);
+        for (PolygonConnectorPathItemNode* itemNode = pathNode->front()->next(); itemNode; itemNode = itemNode->next()) {
+            _path.lineTo(itemNode->_pt);
+        }
+        _path.lineTo(pathNode->front()->_pt);
+
+        removePolygonPath(pathNode);
+    } else if (!f1._node) {
+        PolygonConnectorPathItemNode* newItemNode = _poolItemNodes.alloc(_allocator);
+        blCallCtor(*newItemNode, p1);
+
+        if (f2._isFront)
+            f2._node->prepend(newItemNode);
+        else
+            f2._node->append(newItemNode);
+    } else if (!f2._node) {
+        PolygonConnectorPathItemNode* newItemNode = _poolItemNodes.alloc(_allocator);
+        blCallCtor(*newItemNode, p2);
+
+        if (f1._isFront)
+            f1._node->prepend(newItemNode);
+        else
+            f1._node->append(newItemNode);
+    } else {
+        BL_ASSERT(f1._node && f2._node && f1._node != f2._node);
+
+        // Connect two paths
+        while (!f2._node->empty()) {
+            PolygonConnectorPathItemNode* itemNode = f2._isFront ? f2._node->popFront() : f2._node->popBack();
+
+            if (f1._isFront)
+                f1._node->prepend(itemNode);
+            else
+                f1._node->append(itemNode);
+        }
+
+        removePolygonPath(f2._node);
+    }
+}
+
+void PolygonConnector::removePolygonPath(PolygonConnectorPathNode* node) noexcept {
+    _openPolygons.unlink(node);
+
+    while (!node->empty()) {
+        PolygonConnectorPathItemNode* itemNode = node->popBack();
+        blCallDtor(*itemNode);
+        _poolItemNodes.free(itemNode);
+    }
+
+    blCallDtor(*node);
+    _poolPaths.free(node);
+}
+
+PolygonConnector::FindPathResult PolygonConnector::find(const BLPoint& point) const noexcept {
+    for (PolygonConnectorPathNode* pathNode = _openPolygons.first(); pathNode; pathNode = pathNode->next()) {
+        BL_ASSERT(!pathNode->empty());
+
+        if (pathNode->front()->_pt == point)
+            return FindPathResult{pathNode, true};
+
+        if (pathNode->back()->_pt == point)
+            return FindPathResult{pathNode, false};
+    }
+
+    return FindPathResult{};
 }
 
 } // {bl}

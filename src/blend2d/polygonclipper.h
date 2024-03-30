@@ -7,6 +7,7 @@
 #define BLEND2D_POLYGONCLIPPER_H_INCLUDED
 
 #include "api.h"
+#include "path.h"
 
 //! Defines boolean operators.
 BL_DEFINE_ENUM(BLBooleanOperator) {
@@ -31,11 +32,17 @@ class PolygonClipperImpl;
 
 class BLPolygonClipper {
 public:
-    BLPolygonClipper();
-    ~BLPolygonClipper();
+    BLPolygonClipper() noexcept;
+    ~BLPolygonClipper() noexcept;
+
+    void setOperator(BLBooleanOperator booleanOperator) noexcept;
+    const BLPath& getPath() const noexcept;
 
 private:
+    static constexpr size_t MEMORY_BLOCK_SIZE = 4096;
+
     bl::PolygonClipperImpl* _impl;
+    char _buffer[MEMORY_BLOCK_SIZE];
 };
 
 #endif // BLEND2D_POLYGONCLIPPER_H_INCLUDED

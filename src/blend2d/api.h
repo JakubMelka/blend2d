@@ -949,7 +949,7 @@ BL_DEFINE_ENUM(BLResultCode) {
   BL_ERROR_INVALID_GLYPH,                //!< Invalid glyph identifier.
 
   BL_ERROR_POLYGON_CLIPPER_MAX_SWEEP_EVENTS, //!< Maximum number of sweep events reached.
-  BL_ERROR_POLYGON_POLYGON_SELF_OVERLAPS,    //!< Polygon is overlapping itself
+  BL_ERROR_POLYGON_POLYGON_SELF_OVERLAPS     //!< Polygon is overlapping itself
 
   BL_FORCE_ENUM_UINT32(BL_ERROR)
 };

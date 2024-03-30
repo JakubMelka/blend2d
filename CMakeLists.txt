@@ -202,6 +202,7 @@ set(BLEND2D_SRC_LIST
   blend2d/polygonclipper.h
   blend2d/polygonclipper_p.h
   blend2d/polygonclipper.cpp
+  blend2d/polygonclipper_test.cpp
   blend2d/pixelconverter.cpp
   blend2d/pixelconverter_avx2.cpp
   blend2d/pixelconverter_sse2.cpp
