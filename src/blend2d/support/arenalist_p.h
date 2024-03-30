@@ -31,7 +31,7 @@ public:
 
   BL_NONCOPYABLE(ArenaListNode)
 
-  BL_INLINE ArenaListNode() noexcept
+  BL_INLINE constexpr ArenaListNode() noexcept
     : _listNodes { nullptr, nullptr } {}
 
   BL_INLINE ArenaListNode(ArenaListNode&& other) noexcept

@@ -11,8 +11,10 @@
 #include "support/arenaallocator_p.h"
 #include "support/arenapriorityqueue_p.h"
 #include "support/arenatree_p.h"
+#include "support/arenalist_p.h"
 #include "polygonclipper.h"
 #include "geometry.h"
+#include "path.h"
 
 //! \cond INTERNAL
 //! \addtogroup blend2d_internal
@@ -136,14 +138,60 @@ public:
     SweepEvent* _event;
 };
 
+class PolygonConnectorPathItemNode : public ArenaListNode<PolygonConnectorPathItemNode> {
+public:
+    inline constexpr PolygonConnectorPathItemNode() = default;
+    inline constexpr PolygonConnectorPathItemNode(const BLPoint& pt) : _pt(pt) { }
+
+    BLPoint _pt;
+};
+
+class PolygonConnectorPathNode : public ArenaListNode<PolygonConnectorPathNode> {
+public:
+
+    bool empty() const noexcept { return _path.empty(); }
+    PolygonConnectorPathItemNode* front() const noexcept { return _path.first(); }
+    PolygonConnectorPathItemNode* back() const noexcept { return _path.last(); }
+
+    void append(PolygonConnectorPathItemNode* node) noexcept { _path.append(node); }
+    void prepend(PolygonConnectorPathItemNode* node) noexcept { _path.prepend(node); }
+
+    PolygonConnectorPathItemNode* popFront() noexcept { return _path.popFirst(); }
+    PolygonConnectorPathItemNode* popBack() noexcept { return _path.pop(); }
+
+private:
+    ArenaList<PolygonConnectorPathItemNode> _path;
+};
+
 class PolygonConnector {
 public:
-    void addEdge(const BLPoint& p1, const BLPoint& p2);
+    inline PolygonConnector(ArenaAllocator& allocator) noexcept : _allocator(allocator) {}
+    ~PolygonConnector() noexcept;
+
+    void reset() noexcept;
+    void addEdge(const BLPoint& p1, const BLPoint& p2) noexcept;
+    const BLPath& getPath() const noexcept { return _path; }
+
+private:
+    struct FindPathResult {
+        PolygonConnectorPathNode* _node{};
+        bool _isFront{};
+    };
+
+    void removePolygonPath(PolygonConnectorPathNode* node) noexcept;
+
+    FindPathResult find(const BLPoint& point) const noexcept;
+
+    ArenaAllocator& _allocator;
+    ArenaList<PolygonConnectorPathNode> _openPolygons;
+    ArenaPool<PolygonConnectorPathNode> _poolPaths;
+    ArenaPool<PolygonConnectorPathItemNode> _poolItemNodes;
+    BLPath _path;
 };
 
 class PolygonClipperImpl {
 public:
-    PolygonClipperImpl() noexcept;
+    PolygonClipperImpl(size_t blockSize, void* staticData, size_t staticSize) noexcept;
 
     BLBooleanOperator getOperator() const noexcept;
     void setOperator(BLBooleanOperator newOperator) noexcept;
@@ -155,9 +203,9 @@ public:
 
     void reset() noexcept;
 
-private:
-    static constexpr size_t MEMORY_BLOCK_SIZE = 4096;
+    const BLPath& getPath() const noexcept { return _connector.getPath(); }
 
+private:
     bool isSelfOverlapping(SweepEventNode* sNode1, SweepEventNode* sNode2) const noexcept;
     BLResult updateFlags(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept;
 
@@ -190,7 +238,7 @@ private:
 
     BLBooleanOperator _operator = BL_BOOLEAN_OPERATOR_UNION;
 
-    ArenaAllocatorTmp<MEMORY_BLOCK_SIZE> _memoryAllocator;
+    ArenaAllocator _memoryAllocator;
     ArenaPool<SweepEvent> _sweepEventPool;
     ArenaPool<SweepEventNode> _sweepEventNodePool;
 
