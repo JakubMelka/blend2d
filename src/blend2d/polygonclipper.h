@@ -35,6 +35,9 @@ public:
     BLPolygonClipper() noexcept;
     ~BLPolygonClipper() noexcept;
 
+    BLResult perform() noexcept;
+
+    void addEdge(const BLPoint& p1, const BLPoint& p2, bool isSubject) noexcept;
     void setOperator(BLBooleanOperator booleanOperator) noexcept;
     const BLPath& getPath() const noexcept;
 
