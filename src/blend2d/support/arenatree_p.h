@@ -156,7 +156,7 @@ public:
 
   template<typename CompareT = CompareOp<SortOrder::kAscending>>
   NodeT* prev(NodeT* node, const CompareT& cmp = CompareT()) const noexcept {
-      if (!node)
+      if (!node || !_root)
           return nullptr;
 
       if (node->hasLeft()) {
@@ -173,7 +173,7 @@ public:
               if (isCurrentLess)
                   lastWalkRight = current;
 
-              node = static_cast<NodeT*>(node->_getChild(isCurrentLess));
+              current = static_cast<NodeT*>(current->_getChild(isCurrentLess));
           }
           return lastWalkRight;
       }
@@ -181,7 +181,7 @@ public:
 
   template<typename CompareT = CompareOp<SortOrder::kAscending>>
   NodeT* next(NodeT* node, const CompareT& cmp = CompareT()) const noexcept {
-      if (!node)
+      if (!node || !_root)
           return nullptr;
 
       if (node->hasRight()) {
@@ -198,7 +198,7 @@ public:
               if (!isCurrentLess)
                   lastWalkLeft = current;
 
-              node = static_cast<NodeT*>(node->_getChild(isCurrentLess));
+              current = static_cast<NodeT*>(current->_getChild(isCurrentLess));
           }
           return lastWalkLeft;
       }

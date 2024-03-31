@@ -23,6 +23,14 @@ BLPolygonClipper::~BLPolygonClipper() noexcept {
     blCallDtor(*_impl);
 }
 
+BLResult BLPolygonClipper::perform() noexcept {
+    return _impl->perform();
+}
+
+void BLPolygonClipper::addEdge(const BLPoint& p1, const BLPoint& p2, bool isSubject) noexcept {
+    _impl->addPolygonSegment(bl::Segment(p1, p2), isSubject);
+}
+
 void BLPolygonClipper::setOperator(BLBooleanOperator booleanOperator) noexcept {
     _impl->setOperator(booleanOperator);
 }

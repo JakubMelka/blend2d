@@ -63,7 +63,7 @@ public:
 
 private:
     ArenaTree<NodeT> _tree;
-    NodeT* _min;
+    NodeT* _min = nullptr;
 };
 
 //! \}
