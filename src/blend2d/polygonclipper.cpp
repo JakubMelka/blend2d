@@ -53,20 +53,95 @@ static BL_INLINE int64_t getSignedAreaTimesTwo(const BLPointI64& p1, const BLPoi
     return (p1.x * p2.y - p1.x * p3.y + p2.x * p3.y - p2.x * p1.y + p3.x * p1.y - p3.x * p2.y);
 }
 
-static BL_INLINE bool isClockwise(const BLPoint& p1, const BLPoint& p2, const BLPoint& p3) {
+static BL_INLINE bool isClockwise(const BLPointI64& p1, const BLPointI64& p2, const BLPointI64& p3) {
     return getSignedAreaTimesTwo(p1, p2, p3) < 0;
 }
 
-static BL_INLINE bool isCounterClockwise(const BLPoint& p1, const BLPoint& p2, const BLPoint& p3) {
+static BL_INLINE bool isCounterClockwise(const BLPointI64& p1, const BLPointI64& p2, const BLPointI64& p3) {
     return getSignedAreaTimesTwo(p1, p2, p3) > 0;
 }
 
-static BL_INLINE bool isCollinear(const SweepEvent* a, const SweepEvent* b, double epsilon) {
+static BL_INLINE bool isCollinear(const SweepEvent* a, const SweepEvent* b) {
     const int64_t area1 = getSignedAreaTimesTwo(a->_pt, a->_opposite->_pt, b->_pt);
     const int64_t area2 = getSignedAreaTimesTwo(a->_pt, a->_opposite->_pt, b->_opposite->_pt);
     const int64_t totalArea = blAbs(area1) + blAbs(area2);
-    return totalArea < epsilon;
+    return totalArea == 0;
 }
+
+struct SweepEventComparator {
+    int operator()(const SweepEvent* a, const SweepEvent* b) const noexcept {
+        if (a == b)
+            return 0;
+
+        // Compare x-coordinates first as we are sweeping from left to right.
+        if (a->_pt.x < b->_pt.x)
+            return -1;
+        if (a->_pt.x > b->_pt.x)
+            return 1;
+
+        // If we have the same coordinate, we process the point with the lower y-coordinate first.
+        if (a->_pt.y < b->_pt.y)
+            return -1;
+        if (a->_pt.y > b->_pt.y)
+            return 1;
+
+        // The point is the same in both events. We process right endpoint events first.
+        if (a->isLeft() != b->isLeft())
+            return a->isLeft() ? 1 : -1;
+
+        // Otherwise, the order should remain as it is in the status line.
+        return a->isPointAbove(b->_opposite->_pt) ? -1 : 1;
+    }
+};
+
+struct SweepEventLessThan {
+    bool operator()(const SweepEvent* a, const SweepEvent* b) const noexcept {
+        return SweepEventComparator()(a, b) == -1;
+    }
+};
+
+struct StatusLineComparator {
+    BL_INLINE BL_CONSTEXPR StatusLineComparator() { }
+
+    int operator()(const SweepEvent* a, const SweepEvent* b) const noexcept {
+        if (a == b)
+            return 0;
+
+        SweepEventComparator sweepEventComparator;
+
+        if (!isCollinear(a, b)) {
+            // Segments are not collinear
+
+            // Both segments start at the same point. Determine which line is above the other
+            // in the sweep line by considering the second point of each segment. If b's right
+            // point is above the line segment defined by points (a->_pt, a->_opposite->_pt),
+            // it indicates that segment a precedes segment b in the status line.
+            if (a->_pt == b->_pt)
+                return a->isPointAbove(b->_opposite->_pt) ? -1 : 1;
+
+            // Test whether event a is inserted before event b in the priority queue.
+            // If a < b, then test whether b's start point is above the line segment
+            // defined by points (a->_pt, a->_opposite->_pt). If so, a must precede
+            // b in the status line. Otherwise, b must precede a in the status line.
+            if (sweepEventComparator(a, b) < 0) {
+                return a->isPointAbove(b->_pt) ? -1 : 1;
+            } else {
+                return b->isPointAbove(a->_pt) ? 1 : -1;
+            }
+        } else {
+            // Segments are collinear
+            if (a->_pt == b->_pt) {
+                if (a->_opposite->_pt == b->_opposite->_pt) {
+                    return a->isSubject() ? -1 : 1;
+                } else {
+                    return sweepEventComparator(a->_opposite, b->_opposite);
+                }
+            } else {
+                return sweepEventComparator(a, b);
+            }
+        }
+    }
+};
 
 BLVectorI64 Segment::tangent() const noexcept {
     return _p2 - _p1;
@@ -88,12 +163,14 @@ void Segment::checkOrientation() {
 }
 
 PolygonClipperImpl::PolygonClipperImpl(size_t blockSize, void* staticData, size_t staticSize) noexcept :
-    _memoryAllocator(blockSize, 1, staticData, staticSize) {
-
+    _memoryAllocator(blockSize, 1, staticData, staticSize),
+    _connector(_memoryAllocator){
+    _connector.setScaleInverted(1.0 / _scale);
 }
 
 void PolygonClipperImpl::setScale(double scale) noexcept {
     _scale = scale;
+    _connector.setScaleInverted(1.0 / _scale);
 }
 
 void PolygonClipperImpl::setOperator(BLBooleanOperator newOperator) noexcept {
@@ -101,23 +178,73 @@ void PolygonClipperImpl::setOperator(BLBooleanOperator newOperator) noexcept {
 }
 
 void PolygonClipperImpl::addSegment(const BLPoint& p1, const BLPoint& p2, bool isSubject) noexcept {
-    BLPointI64 scaledP1(p1.x * _scale, p1.y * _scale);
-    BLPointI64 scaledP2(p2.x * _scale, p2.y * _scale);
+    BLPointI64 scaledP1(static_cast<int64_t>(p1.x * _scale), static_cast<int64_t>(p1.y * _scale));
+    BLPointI64 scaledP2(static_cast<int64_t>(p2.x * _scale), static_cast<int64_t>(p2.y * _scale));
 
     if (scaledP1 != scaledP2)
         _originalSegments.emplace_back(scaledP1, scaledP2, isSubject);
 }
 
 BLResult PolygonClipperImpl::perform() noexcept {
+    BLResult result = BL_SUCCESS;
+
     // Create subdivided segments, so no intersections
     // with other segments do exist (with exception of endpoints).
     createProcessedSegments();
 
-    return BL_SUCCESS;
+    // Create sweep events
+    std::vector<SweepEvent*> sweepEvents;
+    createSweepEvents(sweepEvents);
+
+    std::set<SweepEvent*> statusLine;
+
+    auto getPreviousEvent = [&statusLine](SweepEvent* event) {
+        SweepEvent* previous = nullptr;
+
+        if (!event)
+            return previous;
+
+        StatusLineComparator comparator;
+        for (SweepEvent* currentEvent : statusLine) {
+            if (comparator(currentEvent, event) >= 0 || currentEvent == event)
+                continue;
+
+            if (!previous || comparator(previous, currentEvent) < 0)
+                previous = currentEvent;
+        }
+
+        return previous;
+    };
+
+    for (SweepEvent* event : sweepEvents) {
+        if (event->isLeft()) {
+            // Start point of the segment. We must insert current
+            // event into the status line. Only sweep events of left (starting)
+            // points of the segments are in the status line.
+            statusLine.insert(event);
+
+            SweepEvent* evPrev = getPreviousEvent(event);
+            SweepEvent* evPrevPrev = getPreviousEvent(evPrev);
+            updateResult(result, updateFlags(evPrevPrev, evPrev, event));
+        } else {
+            // Add edge to polygon connector
+            addResultEdge(event->_opposite);
+
+            // Clear sweep events
+            statusLine.erase(event->_opposite);
+            freeSweepEvent(event->_opposite);
+            freeSweepEvent(event);
+        }
+
+        if (result != BL_SUCCESS)
+            break;
+    }
+
+    return result;
 }
 
 const BLPath& PolygonClipperImpl::getPath() const noexcept {
-    return _path;
+    return _connector.getPath();
 }
 
 struct BentleyOttmanEvent {
@@ -193,6 +320,34 @@ void PolygonClipperImpl::createProcessedSegments() {
             }
         }
     }
+}
+
+void PolygonClipperImpl::createSweepEvents(std::vector<SweepEvent*>& queue) {
+    for (const Segment& segment : _processedSegments) {
+        SweepEvent* ev1 = allocSweepEvent();
+        SweepEvent* ev2 = allocSweepEvent();
+
+        ev1->_pt = segment._p1;
+        ev2->_pt = segment._p2;
+
+        ev1->_opposite = ev2;
+        ev2->_opposite = ev1;
+
+        if (segment._isSubject) {
+            ev1->_flags |= SweepEventFlags::kIsSubject;
+            ev2->_flags |= SweepEventFlags::kIsSubject;
+        }
+
+        if (SweepEventComparator()(ev1, ev2) < 0)
+            ev1->_flags |= SweepEventFlags::kIsLeft;
+        else
+            ev2->_flags |= SweepEventFlags::kIsLeft;
+
+        queue.push_back(ev1);
+        queue.push_back(ev2);
+    }
+
+    std::sort(queue.begin(), queue.end(), SweepEventLessThan());
 }
 
 LineEquation SegmentUtils::getLineEquation(const Segment& segment) noexcept {
@@ -309,229 +464,16 @@ BLVectorI64 SegmentUtils::getNormal(const Segment& segment) noexcept {
     return normal;
 }
 
-/*
-
-
-
-
-struct SweepEventComparator {
-    int operator()(const SweepEvent* a, const SweepEvent* b) const noexcept {
-        if (a == b)
-            return 0;
-
-        // Compare x-coordinates first as we are sweeping from left to right.
-        if (a->_pt.x < b->_pt.x)
-            return -1;
-        if (a->_pt.x > b->_pt.x)
-            return 1;
-
-        // If we have the same coordinate, we process the point with the lower y-coordinate first.
-        if (a->_pt.y < b->_pt.y)
-            return -1;
-        if (a->_pt.y > b->_pt.y)
-            return 1;
-
-        // The point is the same in both events. We process right endpoint events first.
-        if (a->isLeft() != b->isLeft())
-            return a->isLeft() ? 1 : -1;
-
-        // Otherwise, the order should remain as it is in the status line.
-        return a->isPointAbove(b->_opposite->_pt) ? -1 : 1;
-    }
-};
-
-struct SweepEventNodeComparator {
-    int operator()(const SweepEventNode& a, const SweepEventNode& b) const noexcept {
-        return SweepEventComparator()(a._event, b._event);
-    }
-};
-
-struct StatusLineComparator {
-    BL_INLINE BL_CONSTEXPR StatusLineComparator() { }
-
-    int operator()(const SweepEvent* a, const SweepEvent* b) const noexcept {
-        if (a == b)
-            return 0;
-
-        SweepEventComparator sweepEventComparator;
-
-        if (!isCollinear(a, b)) {
-            // Segments are not collinear
-
-            // Both segments start at the same point. Determine which line is above the other
-            // in the sweep line by considering the second point of each segment. If b's right
-            // point is above the line segment defined by points (a->_pt, a->_opposite->_pt),
-            // it indicates that segment a precedes segment b in the status line.
-            if (a->_pt == b->_pt)
-                return a->isPointAbove(b->_opposite->_pt) ? -1 : 1;
-
-            // Test whether event a is inserted before event b in the priority queue.
-            // If a < b, then test whether b's start point is above the line segment
-            // defined by points (a->_pt, a->_opposite->_pt). If so, a must precede
-            // b in the status line. Otherwise, b must precede a in the status line.
-            if (sweepEventComparator(a, b) < 0) {
-                return a->isPointAbove(b->_pt) ? -1 : 1;
-            } else {
-                return b->isPointAbove(a->_pt) ? 1 : -1;
-            }
-        } else {
-            // Segments are collinear
-            if (a->_pt == b->_pt) {
-                if (a->_opposite->_pt == b->_opposite->_pt) {
-                    return a->isSubject() ? -1 : 1;
-                } else {
-                    return sweepEventComparator(a->_opposite, b->_opposite);
-                }
-            } else {
-                return sweepEventComparator(a, b);
-            }
-        }
-    }
-
-    inline int operator()(const SweepEventNode& a, const SweepEventNode& b) const noexcept {
-        return operator()(a._event, b._event);
-    }
-};
-
-PolygonClipperImpl::PolygonClipperImpl(size_t blockSize, void* staticData, size_t staticSize) noexcept :
-    _memoryAllocator(blockSize, 1, staticData, staticSize),
-    _connector(_memoryAllocator) {
-
+bool PolygonClipperImpl::isSelfOverlapping(SweepEvent* ev1, SweepEvent* ev2) const noexcept {
+    return ev1->isSubject() == ev2->isSubject();
 }
 
-BLBooleanOperator PolygonClipperImpl::getOperator() const noexcept {
-    return _operator;
-}
-
-void PolygonClipperImpl::setOperator(BLBooleanOperator newOperator) noexcept {
-    _operator = newOperator;
-}
-
-void PolygonClipperImpl::addPolygonSegment(const Segment& segment, bool isSubject) noexcept {
-    SweepEvent* ev1 = allocSweepEvent();
-    SweepEvent* ev2 = allocSweepEvent();
-
-    ev1->_pt = segment._p1;
-    ev2->_pt = segment._p2;
-
-    ev1->_opposite = ev2;
-    ev2->_opposite = ev1;
-
-    if (isSubject) {
-        ev1->_flags |= SweepEventFlags::kIsSubject;
-        ev2->_flags |= SweepEventFlags::kIsSubject;
-    }
-
-    if (SweepEventComparator()(ev1, ev2) < 0)
-        ev1->_flags |= SweepEventFlags::kIsLeft;
-    else
-        ev2->_flags |= SweepEventFlags::kIsLeft;
-
-    SweepEventNode* node1 = allocSweepEventNode(ev1);
-    SweepEventNode* node2 = allocSweepEventNode(ev2);
-
-    _q.insert(node1, SweepEventNodeComparator());
-    _q.insert(node2, SweepEventNodeComparator());
-
-    if (isSubject)
-        ++_subjectEdgeCount;
-    else
-        ++_clippingEdgeCount;
-}
-
-BLResult PolygonClipperImpl::perform() noexcept
-{
-    BLResult result = BL_SUCCESS;
-    size_t maxSweepEvents = calculateMaximumNumberOfSweepEvents();
-    size_t currentSweepEventIndex = 0;
-
-    struct ClearGuard {
-        BL_INLINE ClearGuard(PolygonClipperImpl* impl) : _impl(impl) { }
-        BL_INLINE ~ClearGuard() { _impl->reset(); }
-
-        PolygonClipperImpl* _impl = nullptr;
-    } guard(this);
-
-    while (!_q.empty() && result == BL_SUCCESS) {
-        if (++currentSweepEventIndex > maxSweepEvents)
-            return blTraceError(BL_ERROR_POLYGON_CLIPPER_MAX_SWEEP_EVENTS);
-
-        // Pop current event from the queue
-        SweepEventNode* node = _q.pop(SweepEventNodeComparator());
-        SweepEvent* event = node->_event;
-        freeSweepEventNode(node);
-
-        if (event->isLeft()) {
-            StatusLineComparator comparator(_epsilon);
-
-            // Start point of the segment. We must insert current
-            // event into _s. Only sweep events of left (starting)
-            // points of the segments are in _s.
-            SweepEventNode* sNode = allocSweepEventNode(event);
-            _s.insert(sNode, comparator);
-            sNode->_event->_nodeS = sNode;
-            sNode->_event->_opposite->_nodeS = sNode;
-
-            SweepEventNode* sPrev = _s.prev(sNode, comparator);
-            SweepEventNode* sNext = _s.next(sNode, comparator);
-
-            updateResult(result, updateFlags(sPrev, sNode));
-
-            updateResult(result, findIntersections(sPrev, sNode));
-            updateResult(result, findIntersections(sNode, sNext));
-        } else {
-            // End point of the segment
-            SweepEventNode* sNode = event->_nodeS;
-
-            StatusLineComparator comparator(_epsilon);
-            SweepEventNode* sPrev = _s.prev(sNode, comparator);
-            SweepEventNode* sNext = _s.next(sNode, comparator);
-
-            // Add edge to polygon connector
-            addResultEdge(event->_opposite);
-
-            // Clear sweep events
-            _s.remove(sNode, comparator);
-            freeSweepEventNode(sNode);
-            freeSweepEvent(event->_opposite);
-            freeSweepEvent(event);
-
-            updateResult(result, findIntersections(sPrev, sNext));
-        }
-    }
-
-    return result;
-}
-
-void PolygonClipperImpl::reset() noexcept
-{
-    StatusLineComparator comparator(_epsilon);
-
-    while (!_s.empty()) {
-        SweepEventNode* node = _s.root();
-        _s.remove(node, comparator);
-        freeSweepEventNode(node);
-    }
-
-    while (!_q.empty()) {
-        SweepEventNode* node = _q.pop(SweepEventNodeComparator());
-        freeSweepEvent(node->_event);
-        freeSweepEventNode(node);
-    }
-
-    _connector.reset();
-}
-
-bool PolygonClipperImpl::isSelfOverlapping(SweepEventNode* sNode1, SweepEventNode* sNode2) const noexcept {
-    return sNode1->_event->isSubject() == sNode2->_event->isSubject();
-}
-
-BLResult PolygonClipperImpl::updateFlags(SweepEventNode* sPrev, SweepEventNode* sNode) noexcept {
-    if (!sPrev) {
+BLResult PolygonClipperImpl::updateFlags(SweepEvent* eventPrevPrev, SweepEvent* eventPrev, SweepEvent* eventCurr) noexcept {
+    if (!eventPrev) {
         // This is an outer edge; simply clear the flags.
-        sNode->_event->_flags &= ~(SweepEventFlags::kIsInOut | SweepEventFlags::kIsInside);
-    } else if (!sPrev->_event->isSegmentNormal()) {
-        if (isSelfOverlapping(sPrev, sNode))
+        eventCurr->_flags &= ~(SweepEventFlags::kIsInOut | SweepEventFlags::kIsInside);
+    } else if (!eventPrev->isSegmentNormal()) {
+        if (isSelfOverlapping(eventPrev, eventCurr))
             return blTraceError(BL_ERROR_POLYGON_POLYGON_SELF_OVERLAPS);
 
         // At this point, things get more complex. The segments overlap with another segment.
@@ -540,39 +482,38 @@ BLResult PolygonClipperImpl::updateFlags(SweepEventNode* sPrev, SweepEventNode* 
         // before the previous one, set the flag kIsInside (since the previous edge belongs to another
         // polygon, indicating we are inside a polygon), and unset the flag kIsInOut (because the current polygon
         // is above the current edge represented by sNode).
-        SweepEventNode* sPrevPrev = _s.prev(sPrev, StatusLineComparator(_epsilon));
-        if (!sPrevPrev) {
-            blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInside, true);
-            blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInOut, false);
+        if (!eventPrevPrev) {
+            blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInside, true);
+            blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInOut, false);
         }
 
-        if (isSelfOverlapping(sPrev, sPrevPrev))
+        if (isSelfOverlapping(eventPrev, eventPrevPrev))
             return blTraceError(BL_ERROR_POLYGON_POLYGON_SELF_OVERLAPS);
 
-        if (sPrev->_event->isSubject() == sNode->_event->isSubject()) {
-            blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInside, !sPrevPrev->_event->isInOut());
-            blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInOut, !sPrev->_event->isInOut());
+        if (eventPrev->isSubject() == eventCurr->isSubject()) {
+            blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInside, !eventPrevPrev->isInOut());
+            blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInOut, !eventPrev->isInOut());
         } else {
-            blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInside, !sPrev->_event->isInOut());
-            blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInOut, !sPrevPrev->_event->isInOut());
+            blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInside, !eventPrev->isInOut());
+            blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInOut, !eventPrevPrev->isInOut());
         }
-    } else if (sPrev->_event->isSubject() == sNode->_event->isSubject()) {
+    } else if (eventPrev->isSubject() == eventCurr->isSubject()) {
         // Both edges belong to the same polygon. Thus, if the previous edge is inside
         // another polygon, then the current edge is also inside that polygon.
-        blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInside, sPrev->_event->isInside());
+        blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInside, eventPrev->isInside());
 
         // Since the edges belong to the same polygon, one edge implies the polygon
         // is below, and the other implies the polygon is above. This can be determined
         // using the isInOut flag.
-        blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInOut, !sPrev->_event->isInOut());
+        blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInOut, !eventPrev->isInOut());
     } else {
         // The previous edge is below the current edge. This means if the polygon is above the previous edge,
         // the current edge is inside the other polygon, necessitating setting the flag kIsInside.
-        blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInside, !sPrev->_event->isInOut());
+        blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInside, !eventPrev->isInOut());
 
         // If the current polygon is below the current edge and the previous edge is inside the current polygon,
         // it signifies our polygon ends at the current edge.
-        blSetFlag(sNode->_event->_flags, SweepEventFlags::kIsInOut, sPrev->_event->isInside());
+        blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInOut, eventPrev->isInside());
     }
 
     return BL_SUCCESS;
@@ -595,90 +536,18 @@ void PolygonClipperImpl::freeSweepEvent(SweepEvent* event) noexcept {
     _sweepEventPool.free(event);
 }
 
-SweepEventNode* PolygonClipperImpl::allocSweepEventNode(SweepEvent* event) noexcept {
-    SweepEventNode* node = _sweepEventNodePool.alloc(_memoryAllocator);
-    blCallCtor(*node, event);
-    return node;
-}
-
-void PolygonClipperImpl::freeSweepEventNode(SweepEventNode* node) noexcept {
-    blCallDtor(*node);
-    _sweepEventNodePool.free(node);
-}
-
-void PolygonClipperImpl::addResultEdge(SweepEvent* edge)
-{
-    BL_ASSERT(edge->isLeft());
-
-    if (edge->isSegmentNormal()) {
-        switch (_operator) {
-        case BL_BOOLEAN_OPERATOR_UNION:
-            if (!edge->isInside())
-                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
-            break;
-        case BL_BOOLEAN_OPERATOR_INTERSECTION:
-            if (edge->isInside())
-                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
-            break;
-        case BL_BOOLEAN_OPERATOR_DIFFERENCE:
-            if ((edge->isSubject() && !edge->isInside()) || (edge->isClipping() && edge->isInside()))
-                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
-            break;
-        case BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE:
-            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
-            break;
-        }
-    } else if (edge->isSegmentSameTransition()) {
-        if (_operator == BL_BOOLEAN_OPERATOR_UNION || _operator == BL_BOOLEAN_OPERATOR_INTERSECTION)
-            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
-    } else if (edge->isSegmentDifferentTransition()) {
-        if (_operator == BL_BOOLEAN_OPERATOR_DIFFERENCE)
-            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
-    }
-}
-
-Segment SweepEvent::getSegment() const noexcept {
-    if (isLeft()) {
-        return Segment(_pt, _opposite->_pt);
-    } else {
-        return Segment(_opposite->_pt, _pt);
-    }
-}
-
-bool SweepEvent::isPointAbove(const BLPoint& pt) const noexcept {
+bool SweepEvent::isPointAbove(const BLPointI64& pt) const noexcept {
     if (isLeft())
         return isCounterClockwise(_pt, _opposite->_pt, pt);
     else
         return isCounterClockwise(_opposite->_pt, _pt, pt);
 }
 
-bool SweepEvent::isPointBelow(const BLPoint& pt) const noexcept {
+bool SweepEvent::isPointBelow(const BLPointI64& pt) const noexcept {
     if (isLeft())
         return isClockwise(_pt, _opposite->_pt, pt);
     else
         return isClockwise(_opposite->_pt, _pt, pt);
-}
-
-constexpr bool SegmentIntersection::isLine1ContainedWithinLine2() const {
-    return blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine1Start) &&
-           blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine1End);
-}
-
-constexpr bool SegmentIntersection::isLine2ContainedWithinLine1() const {
-    return blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine2Start) &&
-           blTestFlag(flags, SegmentIntersectionFlags::kIntersectionLine2End);
-}
-
-constexpr bool SegmentIntersection::isNoIntersection() const {
-    return blTestFlag(flags, SegmentIntersectionFlags::kNoIntersection);
-}
-
-constexpr bool SegmentIntersection::isOverlapped() const {
-    return blTestFlag(flags, SegmentIntersectionFlags::kOverlapped);
-}
-
-double Segment::getLength() const noexcept {
-    return bl::Geometry::length(_p1, _p1);
 }
 
 PolygonConnector::~PolygonConnector() noexcept {
@@ -686,12 +555,11 @@ PolygonConnector::~PolygonConnector() noexcept {
 }
 
 void PolygonConnector::reset() noexcept {
-    while (!_openPolygons.empty()) {
+    while (!_openPolygons.empty())
         removePolygonPath(_openPolygons.first());
-    }
 }
 
-void PolygonConnector::addEdge(const BLPoint& p1, const BLPoint& p2) noexcept {
+void PolygonConnector::addEdge(const BLPointI64& p1, const BLPointI64& p2) noexcept {
     if (p1 == p2)
         return;
 
@@ -719,11 +587,11 @@ void PolygonConnector::addEdge(const BLPoint& p1, const BLPoint& p2) noexcept {
         // to the final path. Then, remove polygon.
         PolygonConnectorPathNode* pathNode = f1._node;
 
-        _path.moveTo(pathNode->front()->_pt);
+        _path.moveTo(getUnscaledPoint(pathNode->front()->_pt));
         for (PolygonConnectorPathItemNode* itemNode = pathNode->front()->next(); itemNode; itemNode = itemNode->next()) {
-            _path.lineTo(itemNode->_pt);
+            _path.lineTo(getUnscaledPoint(itemNode->_pt));
         }
-        _path.lineTo(pathNode->front()->_pt);
+        _path.lineTo(getUnscaledPoint(pathNode->front()->_pt));
 
         removePolygonPath(pathNode);
     } else if (!f1._node) {
@@ -772,7 +640,21 @@ void PolygonConnector::removePolygonPath(PolygonConnectorPathNode* node) noexcep
     _poolPaths.free(node);
 }
 
-PolygonConnector::FindPathResult PolygonConnector::find(const BLPoint& point) const noexcept {
+BLPoint PolygonConnector::getUnscaledPoint(const BLPointI64& p) const noexcept {
+    const double x = p.x * _scaleInverted;
+    const double y = p.y * _scaleInverted;
+    return BLPoint(x, y);
+}
+
+double PolygonConnector::getScaleInverted() const {
+    return _scaleInverted;
+}
+
+void PolygonConnector::setScaleInverted(double newScaleInverted) {
+    _scaleInverted = newScaleInverted;
+}
+
+PolygonConnector::FindPathResult PolygonConnector::find(const BLPointI64& point) const noexcept {
     for (PolygonConnectorPathNode* pathNode = _openPolygons.first(); pathNode; pathNode = pathNode->next()) {
         BL_ASSERT(!pathNode->empty());
 
@@ -784,6 +666,60 @@ PolygonConnector::FindPathResult PolygonConnector::find(const BLPoint& point) co
     }
 
     return FindPathResult{};
-}*/
+}
+
+void PolygonClipperImpl::addResultEdge(SweepEvent* edge)
+{
+    BL_ASSERT(edge->isLeft());
+
+    if (edge->isSegmentNormal()) {
+        switch (_operator) {
+        case BL_BOOLEAN_OPERATOR_UNION:
+            if (!edge->isInside())
+                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        case BL_BOOLEAN_OPERATOR_INTERSECTION:
+            if (edge->isInside())
+                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        case BL_BOOLEAN_OPERATOR_DIFFERENCE:
+            if ((edge->isSubject() && !edge->isInside()) || (edge->isClipping() && edge->isInside()))
+                _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        case BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE:
+            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+            break;
+        }
+    } else if (edge->isSegmentSameTransition()) {
+        if (_operator == BL_BOOLEAN_OPERATOR_UNION || _operator == BL_BOOLEAN_OPERATOR_INTERSECTION)
+            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+    } else if (edge->isSegmentDifferentTransition()) {
+        if (_operator == BL_BOOLEAN_OPERATOR_DIFFERENCE)
+            _connector.addEdge(edge->_pt, edge->_opposite->_pt);
+    }
+}
+
+/*
+
+void PolygonClipperImpl::reset() noexcept
+{
+    StatusLineComparator comparator(_epsilon);
+
+    while (!_s.empty()) {
+        SweepEventNode* node = _s.root();
+        _s.remove(node, comparator);
+        freeSweepEventNode(node);
+    }
+
+    while (!_q.empty()) {
+        SweepEventNode* node = _q.pop(SweepEventNodeComparator());
+        freeSweepEvent(node->_event);
+        freeSweepEventNode(node);
+    }
+
+    _connector.reset();
+}
+
+*/
 
 } // {bl}
