@@ -16,6 +16,7 @@
 
 #include <vector>
 #include <array>
+#include <set>
 
 //! \cond INTERNAL
 //! \addtogroup blend2d_internal
@@ -303,7 +304,16 @@ private:
     void createSweepEvents(std::vector<SweepEvent*>& queue);
 
     bool isSelfOverlapping(SweepEvent* ev1, SweepEvent* ev2) const noexcept;
-    BLResult updateFlags(SweepEvent* eventPrevPrev, SweepEvent* eventPrev, SweepEvent* eventCurr) noexcept;
+    SweepEvent* getPreviousEvent(std::set<SweepEvent*>& statusLine, SweepEvent* event) const noexcept;
+    SweepEvent* getNextEvent(std::set<SweepEvent*>& statusLine, SweepEvent* event) const noexcept;
+
+    BLResult updateFlags(SweepEvent* eventPrevPrev,
+                         SweepEvent* eventPrev,
+                         SweepEvent* eventCurr,
+                         SweepEvent* eventNext) noexcept;
+
+    void updateOverlappedEvents(SweepEvent* event1, SweepEvent* event2);
+
     void updateResult(BLResult& oldResult, BLResult newResult) const noexcept;
 
     SweepEvent* allocSweepEvent() noexcept;

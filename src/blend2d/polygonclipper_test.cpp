@@ -89,8 +89,8 @@ static bool comparePaths(const BLPath& path1, const BLPath& path2, int eps) {
         imageCodec.findByName("PNG");
         EXPECT_TRUE(imageCodec.isValid());
 
-        image1.writeToFile("K:\\Programming\\PDF\\PDF_For_Qt\\blend2d\\1.png", imageCodec);
-        image2.writeToFile("K:\\Programming\\PDF\\PDF_For_Qt\\blend2d\\2.png", imageCodec);
+        image1.writeToFile("1.png", imageCodec);
+        image2.writeToFile("2.png", imageCodec);
     }
 #endif
 

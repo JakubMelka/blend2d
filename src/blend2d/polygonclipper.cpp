@@ -198,24 +198,6 @@ BLResult PolygonClipperImpl::perform() noexcept {
 
     std::set<SweepEvent*> statusLine;
 
-    auto getPreviousEvent = [&statusLine](SweepEvent* event) {
-        SweepEvent* previous = nullptr;
-
-        if (!event)
-            return previous;
-
-        StatusLineComparator comparator;
-        for (SweepEvent* currentEvent : statusLine) {
-            if (comparator(currentEvent, event) >= 0 || currentEvent == event)
-                continue;
-
-            if (!previous || comparator(previous, currentEvent) < 0)
-                previous = currentEvent;
-        }
-
-        return previous;
-    };
-
     for (SweepEvent* event : sweepEvents) {
         if (event->isLeft()) {
             // Start point of the segment. We must insert current
@@ -223,9 +205,10 @@ BLResult PolygonClipperImpl::perform() noexcept {
             // points of the segments are in the status line.
             statusLine.insert(event);
 
-            SweepEvent* evPrev = getPreviousEvent(event);
-            SweepEvent* evPrevPrev = getPreviousEvent(evPrev);
-            updateResult(result, updateFlags(evPrevPrev, evPrev, event));
+            SweepEvent* evPrev = getPreviousEvent(statusLine, event);
+            SweepEvent* evPrevPrev = getPreviousEvent(statusLine, evPrev);
+            SweepEvent* evNext = getNextEvent(statusLine, event);
+            updateResult(result, updateFlags(evPrevPrev, evPrev, event, evNext));
         } else {
             // Add edge to polygon connector
             addResultEdge(event->_opposite);
@@ -468,7 +451,43 @@ bool PolygonClipperImpl::isSelfOverlapping(SweepEvent* ev1, SweepEvent* ev2) con
     return ev1->isSubject() == ev2->isSubject();
 }
 
-BLResult PolygonClipperImpl::updateFlags(SweepEvent* eventPrevPrev, SweepEvent* eventPrev, SweepEvent* eventCurr) noexcept {
+SweepEvent* PolygonClipperImpl::getPreviousEvent(std::set<SweepEvent*>& statusLine, SweepEvent* event) const noexcept {
+    SweepEvent* previousEvent = nullptr;
+
+    if (!event)
+        return previousEvent;
+
+    StatusLineComparator comparator;
+    for (SweepEvent* currentEvent : statusLine) {
+        if (comparator(currentEvent, event) >= 0 || currentEvent == event)
+            continue;
+
+        if (!previousEvent || comparator(previousEvent, currentEvent) < 0)
+            previousEvent = currentEvent;
+    }
+
+    return previousEvent;
+}
+
+SweepEvent* PolygonClipperImpl::getNextEvent(std::set<SweepEvent*>& statusLine, SweepEvent* event) const noexcept {
+    SweepEvent* nextEvent = nullptr;
+
+    if (!event)
+        return nextEvent;
+
+    StatusLineComparator comparator;
+    for (SweepEvent* currentEvent : statusLine) {
+        if (comparator(currentEvent, event) <= 0 || currentEvent == event)
+            continue;
+
+        if (!nextEvent || comparator(nextEvent, currentEvent) < 0)
+            nextEvent = currentEvent;
+    }
+
+    return nextEvent;
+}
+
+BLResult PolygonClipperImpl::updateFlags(SweepEvent* eventPrevPrev, SweepEvent* eventPrev, SweepEvent* eventCurr, SweepEvent* eventNext) noexcept {
     if (!eventPrev) {
         // This is an outer edge; simply clear the flags.
         eventCurr->_flags &= ~(SweepEventFlags::kIsInOut | SweepEventFlags::kIsInside);
@@ -516,11 +535,29 @@ BLResult PolygonClipperImpl::updateFlags(SweepEvent* eventPrevPrev, SweepEvent* 
         blSetFlag(eventCurr->_flags, SweepEventFlags::kIsInOut, eventPrev->isInside());
     }
 
+    updateOverlappedEvents(eventPrev, eventCurr);
+    updateOverlappedEvents(eventCurr, eventNext);
+
     return BL_SUCCESS;
 }
 
-void PolygonClipperImpl::updateResult(BLResult& oldResult, BLResult newResult) const noexcept
-{
+void PolygonClipperImpl::updateOverlappedEvents(SweepEvent* event1, SweepEvent* event2) {
+    if (!event1 || !event2)
+        return;
+
+    if ((event1->_pt == event2->_pt && event1->_opposite->_pt == event2->_opposite->_pt) ||
+        (event1->_pt == event2->_opposite->_pt && event1->_opposite->_pt == event2->_pt)) {
+        // Overlapping segments
+
+        blSetFlag(event1->_flags, SweepEventFlags::kSegmentNonContributing, true);
+        blSetFlag(event1->_opposite->_flags, SweepEventFlags::kSegmentNonContributing, true);
+
+        blSetFlag(event2->_flags, SweepEventFlags::kSegmentSameTransition, event1->isInOut() == event2->isInOut());
+        blSetFlag(event2->_flags, SweepEventFlags::kSegmentDifferentTransition, event1->isInOut() != event2->isInOut());
+    }
+}
+
+void PolygonClipperImpl::updateResult(BLResult& oldResult, BLResult newResult) const noexcept {
     if (oldResult == BL_SUCCESS)
         oldResult = newResult;
 }
@@ -675,51 +712,61 @@ void PolygonClipperImpl::addResultEdge(SweepEvent* edge)
     if (edge->isSegmentNormal()) {
         switch (_operator) {
         case BL_BOOLEAN_OPERATOR_UNION:
+            // The only situation where adding an edge is not necessary
+            // is when the edge is located inside another polygon.
             if (!edge->isInside())
                 _connector.addEdge(edge->_pt, edge->_opposite->_pt);
             break;
+
         case BL_BOOLEAN_OPERATOR_INTERSECTION:
+            // If two polygons intersect, an edge is added only if
+            // it is located inside the other polygon.
             if (edge->isInside())
                 _connector.addEdge(edge->_pt, edge->_opposite->_pt);
             break;
+
         case BL_BOOLEAN_OPERATOR_DIFFERENCE:
+            // Here, we have two cases. If the edge belongs to the 'subject' polygon
+            // and is outside the 'clipping' polygon, we add this edge to the result.
+            // The second case is straightforward: if an edge of the 'clipping' polygon
+            // is located inside the 'subject' polygon, we add this edge to the resulting polygon.
             if ((edge->isSubject() && !edge->isInside()) || (edge->isClipping() && edge->isInside()))
                 _connector.addEdge(edge->_pt, edge->_opposite->_pt);
             break;
+
         case BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE:
+            // When performing the symmetric difference of polygons,
+            // we add all edges, as they will all be part of the resulting polygon.
             _connector.addEdge(edge->_pt, edge->_opposite->_pt);
             break;
         }
     } else if (edge->isSegmentSameTransition()) {
+        // If we have overlapping edges and both polygons are on
+        // the same side of these edges, we add the edge to the result
+        // when the operator is 'union' or 'intersection,'
+        // as both polygons will be preserved in the resulting polygon.
+        // However, for 'difference' or 'symmetric difference,'
+        // both parts of the polygons sharing this edge will be removed
+        // from the resulting polygon.
+
         if (_operator == BL_BOOLEAN_OPERATOR_UNION || _operator == BL_BOOLEAN_OPERATOR_INTERSECTION)
             _connector.addEdge(edge->_pt, edge->_opposite->_pt);
     } else if (edge->isSegmentDifferentTransition()) {
+        // In this case, two polygons share the same edge but are located
+        // on opposite sides of it. For the 'union' operator,
+        // this edge will not appear in the resulting polygon,
+        // as the polygons merge into one larger polygon.
+        // When performing the 'intersection' operation,
+        // neither polygon will be included in the result, so no edge is added.
+        // However, the edge is added when performing the 'difference' operator,
+        // because the original part of the 'subject' polygon sharing this edge
+        // remains in the result.
+        // Finally, the 'symmetric difference' operator behaves similarly
+        // to the 'union' operator in this case.
+
         if (_operator == BL_BOOLEAN_OPERATOR_DIFFERENCE)
             _connector.addEdge(edge->_pt, edge->_opposite->_pt);
     }
 }
-
-/*
-
-void PolygonClipperImpl::reset() noexcept
-{
-    StatusLineComparator comparator(_epsilon);
-
-    while (!_s.empty()) {
-        SweepEventNode* node = _s.root();
-        _s.remove(node, comparator);
-        freeSweepEventNode(node);
-    }
-
-    while (!_q.empty()) {
-        SweepEventNode* node = _q.pop(SweepEventNodeComparator());
-        freeSweepEvent(node->_event);
-        freeSweepEventNode(node);
-    }
-
-    _connector.reset();
-}
-
-*/
 
 } // {bl}
