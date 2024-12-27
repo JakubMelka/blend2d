@@ -377,8 +377,8 @@ SegmentIntersection SegmentUtils::getSegmentIntersection(const Segment& segment1
     } else {
         // Non-collinear segments. We will calculate subdeterminants
         // using cramers rule and solve equations.
-        int64_t Dx = eq2.b * eq1.c - eq1.b * eq1.c;
-        int64_t Dy = eq2.a * eq1.c - eq1.a * eq1.c;
+        int64_t Dx = eq1.b * eq2.c - eq2.b * eq1.c;
+        int64_t Dy = eq2.a * eq1.c - eq1.a * eq2.c;
 
         int64_t x = Dx / D;
         int64_t y = Dy / D;

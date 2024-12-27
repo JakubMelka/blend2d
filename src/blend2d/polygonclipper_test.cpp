@@ -16,6 +16,8 @@
 namespace bl {
 namespace Tests {
 
+//#define BL_EXPORT_IMAGE
+
 static void addRectangle(BLPolygonClipper& polygonClipper,
                          double x0, double y0,
                          double width, double height,
@@ -26,12 +28,13 @@ static void addRectangle(BLPolygonClipper& polygonClipper,
     polygonClipper.addEdge(BLPoint(x0, y0 + height), BLPoint(x0, y0), isSubject);
 }
 
-static bool comparePaths(const BLPath& path1, const BLPath& path2, int eps) {
+static bool comparePaths(const BLPath& path1, const BLPath& path2, const BLPath& boxPath, int eps) {
     if (path1.empty() && path2.empty())
         return true;
 
     BLPath totalPath = path1;
     totalPath.addPath(path2);
+    totalPath.addPath(boxPath);
 
     BLBox boundingBox;
     BLResult result = totalPath.getControlBox(&boundingBox);
@@ -133,7 +136,7 @@ static void testPolygonClipperSimpleRectNotOverlapped() noexcept {
         if (op == BL_BOOLEAN_OPERATOR_UNION || op == BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE)
             expectedPath.addRect(200.0, 0.0, 100.0, 100.0);
 
-        EXPECT_TRUE(comparePaths(clippedPath, expectedPath, 32));
+        EXPECT_TRUE(comparePaths(clippedPath, expectedPath, BLPath(), 32));
     }
 }
 
@@ -164,7 +167,66 @@ static void testPolygonClipperSimpleRectWithSharedEdge() noexcept {
         if (op == BL_BOOLEAN_OPERATOR_UNION || op == BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE)
             expectedPath.addRect(100.0, 0.0, 100.0, 100.0);
 
-        EXPECT_TRUE(comparePaths(clippedPath, expectedPath, 32));
+        EXPECT_TRUE(comparePaths(clippedPath, expectedPath, BLPath(), 32));
+    }
+}
+
+static void testPolygonClipperSimpleRectOverlap() noexcept {
+    INFO("Testing Polygon Clipper - two rects overlapped");
+
+    for (BLBooleanOperator op : { BL_BOOLEAN_OPERATOR_UNION,
+                                  BL_BOOLEAN_OPERATOR_INTERSECTION,
+                                  BL_BOOLEAN_OPERATOR_DIFFERENCE,
+                                  BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE }) {
+        BLPolygonClipper polygonClipper;
+        polygonClipper.setOperator(op);
+
+        addRectangle(polygonClipper, 0.0, 0.0, 100.0, 100.0, true);
+        addRectangle(polygonClipper, 50.0, 50.0, 100.0, 100.0, false);
+
+        BLResult result = polygonClipper.perform();
+        EXPECT_EQ(result, BL_SUCCESS);
+
+        BLPath expectedPath;
+        BLPath clippedPath = polygonClipper.getPath();
+
+        switch (op) {
+        case BL_BOOLEAN_OPERATOR_UNION:
+            expectedPath.addRect(0.0, 0.0, 100.0, 100.0);
+            expectedPath.addRect(50.0, 50.0, 100.0, 100.0);
+            break;
+        case BL_BOOLEAN_OPERATOR_INTERSECTION:
+            expectedPath.addRect(50.0, 50.0, 50.0, 50.0);
+            break;
+        case BL_BOOLEAN_OPERATOR_DIFFERENCE:
+            expectedPath.moveTo(0.0, 0.0);
+            expectedPath.lineTo(100.0, 0.0);
+            expectedPath.lineTo(100.0, 50.0);
+            expectedPath.lineTo(50.0, 50.0);
+            expectedPath.lineTo(50.0, 100.0);
+            expectedPath.lineTo(0.0, 100.0);
+            expectedPath.lineTo(0.0, 0.0);
+            break;
+        case BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE:
+            expectedPath.moveTo(0.0, 0.0);
+            expectedPath.lineTo(100.0, 0.0);
+            expectedPath.lineTo(100.0, 50.0);
+            expectedPath.lineTo(50.0, 50.0);
+            expectedPath.lineTo(50.0, 100.0);
+            expectedPath.lineTo(0.0, 100.0);
+            expectedPath.lineTo(0.0, 0.0);
+
+            expectedPath.moveTo(100.0, 50.0);
+            expectedPath.lineTo(150.0, 50.0);
+            expectedPath.lineTo(150.0, 150.0);
+            expectedPath.lineTo( 50.0, 150.0);
+            expectedPath.lineTo( 50.0, 100.0);
+            expectedPath.lineTo(100.0, 100.0);
+            expectedPath.lineTo(100.0, 50.0);
+            break;
+        }
+
+        EXPECT_TRUE(comparePaths(clippedPath, expectedPath, BLPath(), 32));
     }
 }
 
@@ -172,8 +234,8 @@ UNIT(polygon_clipper, BL_TEST_GROUP_POLYGON_CLIPPER) {
     testPolygonClipperBasic();
     testPolygonClipperSimpleRectNotOverlapped();
     testPolygonClipperSimpleRectWithSharedEdge();
+    testPolygonClipperSimpleRectOverlap();
 }
-
 
 } // {Tests}
 } // {bl}
