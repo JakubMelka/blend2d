@@ -21,7 +21,7 @@ BL_DEFINE_ENUM(BLBooleanOperator) {
     BL_BOOLEAN_OPERATOR_SYMMETRIC_DIFFERENCE = 3,
 
     //! Maximum value for BLBooleanOperator.
-    BL_BOOLEAN_OPERATOR_MAX_VALUE = 3,
+    BL_BOOLEAN_OPERATOR_MAX_VALUE = 3
     //! Forces this enumeration to be a 32-bit unsigned integer.
     BL_FORCE_ENUM_UINT32(BL_BOOLEAN_OPERATOR)
 };
