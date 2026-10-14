@@ -3984,9 +3984,14 @@ static BLResult BL_CDECL blit_image_d_impl(BLContextImpl* base_impl, const BLPoi
       int64_t start_fx = Math::floor_to_int64(startX);
       int64_t start_fy = Math::floor_to_int64(startY);
 
-      if (!((start_fx | start_fy) & ctx_impl->render_target_info.fpMaskI)) {
-        // Pixel aligned blit. At this point we still don't know whether the area where the pixels will be composited
-        // is aligned, but we know for sure that the pixels of `src` image don't require any interpolation.
+      BLBoxI box_u(ix0, iy0, ix1, iy1);
+
+      // Pixel aligned blit to a pixel aligned area - the pixels of `src` image don't require any interpolation and
+      // the area is filled as a rectangle. An unaligned area (clipped by an unaligned clip box) is filled by masks,
+      // which can start at a different X than the area (their spans can be extended to the left to align their
+      // width) - that's not supported by the aligned blit fetcher, which would read pixels outside of `src_rect`.
+      // In that case the image is fetched as a pattern with an integral translation, which handles any X.
+      if (!((start_fx | start_fy) & ctx_impl->render_target_info.fpMaskI) && isBoxAligned24x8(box_u)) {
         int x0 = ix0 >> ctx_impl->render_target_info.fpShiftI;
         int y0 = iy0 >> ctx_impl->render_target_info.fpShiftI;
         int x1 = (ix1 + ctx_impl->render_target_info.fpMaskI) >> ctx_impl->render_target_info.fpShiftI;
@@ -4009,7 +4014,7 @@ static BLResult BL_CDECL blit_image_d_impl(BLContextImpl* base_impl, const BLPoi
       }
 
       prepare_non_solid_fetch(ctx_impl, di, ds, fetch_data.ptr());
-      return finalize_explicit_op<kRM>(ctx_impl, fetch_data.ptr(), fill_clipped_box_f<kRM>(ctx_impl, di, ds, BLBoxI(ix0, iy0, ix1, iy1)));
+      return finalize_explicit_op<kRM>(ctx_impl, fetch_data.ptr(), fill_clipped_box_f<kRM>(ctx_impl, di, ds, box_u));
     }
 
     BLMatrix2D ft(ctx_impl->final_transform());
