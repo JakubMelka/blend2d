@@ -2082,6 +2082,9 @@ void CompOpPart::v_mask_proc_a8_gp(Pixel& out, PixelFlags flags, const Gp& msk, 
 // =======================================================
 
 void CompOpPart::v_mask_proc_a8_vec(Pixel& out, PixelCount n, PixelFlags flags, const VecArray& vm_, PixelCoverageFlags coverage_flags, PixelPredicate& predicate) noexcept {
+  // The mask is never modified in place by the X86 implementation, so `coverage_flags` is only used by AArch64.
+  bl_unused(coverage_flags);
+
   VecWidth vw = pc->vec_width_of(DataWidth::k16, n);
   size_t full_n = pc->vec_count_of(DataWidth::k16, n);
 
@@ -2129,12 +2132,11 @@ void CompOpPart::v_mask_proc_a8_vec(Pixel& out, PixelCount n, PixelFlags flags, 
       src_fetch(s, n, PixelFlags::kUA, predicate);
       dst_fetch(d, n, PixelFlags::kUA, predicate);
 
+      // NOTE: The mask must not be inverted in place - a repeated (C) mask is shared by loops of a different
+      // width and modifying its narrower view (e.g. XMM via VEX encoding) would clear its upper part.
       pc->v_mul_u16(sa, sa, vm);
-      pc->v_inv255_u16(vm, vm);
-      pc->v_mul_u16(da, da, vm);
-
-      if (bl_test_flag(coverage_flags, PixelCoverageFlags::kImmutable))
-        pc->v_inv255_u16(vm, vm);
+      pc->v_inv255_u16(xv, vm);
+      pc->v_mul_u16(da, da, xv);
 
       pc->v_add_i16(da, da, sa);
       pc->v_div255_u16(da);
@@ -2265,13 +2267,11 @@ void CompOpPart::v_mask_proc_a8_vec(Pixel& out, PixelCount n, PixelFlags flags, 
       pc->v_mul_u16(sa, sa, vm);
       pc->v_div255_u16(sa);
 
+      // NOTE: The mask must not be inverted in place (see SrcCopy).
       pc->v_inv255_u16(xv, da);
-      pc->v_inv255_u16(vm, vm);
+      pc->v_inv255_u16(yv, vm);
       pc->v_mul_u16(sa, sa, xv);
-      pc->v_mul_u16(da, da, vm);
-
-      if (bl_test_flag(coverage_flags, PixelCoverageFlags::kImmutable))
-        pc->v_inv255_u16(vm, vm);
+      pc->v_mul_u16(da, da, yv);
 
       pc->v_add_i16(da, da, sa);
       pc->v_div255_u16(da);
