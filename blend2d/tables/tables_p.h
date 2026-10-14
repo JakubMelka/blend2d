@@ -248,8 +248,8 @@ struct BL_ALIGN_TYPE(CommonTable, 64)
   }};
 
   VecConst512<uint64_t> permu8_pc_to_pa {{
-    0x1C1814100C080400u, 0x3C3834302C282420u,
-    0x5C5854504C484440u, 0x7C7874706C686460u,
+    0x1F1B17130F0B0703u, 0x3F3B37332F2B2723u,
+    0x5F5B57534F4B4743u, 0x7F7B77736F6B6763u,
     0xffffffffffffffffu, 0xffffffffffffffffu,
     0xffffffffffffffffu, 0xffffffffffffffffu
   }};
