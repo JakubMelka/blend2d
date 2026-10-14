@@ -41,7 +41,8 @@ class FetchSimplePatternPart : public FetchPatternPart {
 public:
   //! Aligned and fractional blits.
   struct SimpleRegs {
-    //! Pointer to the previous scanline and/or pixel (fractional).
+    //! Pointer to the previous scanline and/or pixel (fractional) or to the pixel at X == 0 of the current
+    //! scanline (aligned blit of a non-rectangular fill).
     Gp srcp0;
     //! Pointer to the current scanline and/or pixel (aligned).
     Gp srcp1;

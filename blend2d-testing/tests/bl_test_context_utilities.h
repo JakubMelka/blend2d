@@ -38,6 +38,8 @@ enum class CommandId : uint32_t {
   kStrokePathQuad,
   kStrokePathCubic,
   kStrokeText,
+  kBlitImageI,
+  kBlitImageD,
   kAll,
 
   kMaxValue = kAll,
@@ -274,6 +276,8 @@ static const char* command_id_to_string(CommandId command) {
     case CommandId::kStrokePathQuad     : return "stroke-path-quad";
     case CommandId::kStrokePathCubic    : return "stroke-path-cubic";
     case CommandId::kStrokeText         : return "stroke-text";
+    case CommandId::kBlitImageI         : return "blit-image-i";
+    case CommandId::kBlitImageD         : return "blit-image-d";
     case CommandId::kAll                : return "all";
 
     default:
@@ -899,6 +903,14 @@ public:
         render_text<Op::kStroke>(n, options.face_index, float(int(options.font_size)));
         break;
 
+      case CommandId::kBlitImageI:
+        render_blit_image<false>(n);
+        break;
+
+      case CommandId::kBlitImageD:
+        render_blit_image<true>(n);
+        break;
+
       default:
         break;
     }
@@ -1217,6 +1229,32 @@ public:
         }
       }
 
+      record_iteration(i);
+    }
+  }
+
+  // Blits an image to a pixel aligned position (the pixels of the image are not interpolated) and clips it by a
+  // rectangle with fractional coordinates, so the box of the blit is not pixel aligned and it's filled by masks.
+  template<bool kDoubleOrigin>
+  void render_blit_image(size_t n) {
+    for (size_t i = 0; i < n; i++) {
+      setup_common_options(_ctx);
+
+      const BLImage& texture = _textures[_rnd.next_uint32() % kTextureCount];
+      BLRect clip = _rnd.next_rect_d();
+      BLPointI origin = _rnd.next_point_i();
+
+      _ctx.save();
+      _ctx.clip_to_rect(clip);
+
+      if constexpr (kDoubleOrigin) {
+        _ctx.blit_image(BLPoint(origin), texture);
+      }
+      else {
+        _ctx.blit_image(origin, texture);
+      }
+
+      _ctx.restore();
       record_iteration(i);
     }
   }

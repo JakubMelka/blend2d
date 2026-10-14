@@ -259,13 +259,22 @@ FetchSimplePatternPart::FetchSimplePatternPart(PipeCompiler* pc, FetchType fetch
 
 void FetchSimplePatternPart::_init_part(const PipeFunction& fn, Gp& x, Gp& y) noexcept {
   if (is_aligned_blit()) {
-    // This is a special-case designed only for rectangular blits that never
-    // go out of image bounds (this implies that no extend mode is applied).
-    BL_ASSERT(is_rect_fill());
+    // This is a special-case designed only for blits that never go out of image bounds (this implies that no
+    // extend mode is applied).
+    //
+    // A rectangular fill starts each scanline at the same X and processes exactly `src.size.w` pixels, thus the
+    // stride can be reduced by the width of the blit. Other fills (masks) can start a scanline at a different X
+    // and process a different number of pixels (for example a mask fill of an unaligned box extends its spans
+    // to the left to align their width) - in that case `srcp0` points to the pixel at X == 0 of the current
+    // scanline and `srcp1` is calculated from it by `start_at_x()`.
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     f->stride       = pc->new_gpz("f.stride");       // Mem.
     f->srcp1        = pc->new_gpz("f.srcp1");        // Reg.
+
+    if (!is_rect_fill()) {
+      f->srcp0      = pc->new_gpz("f.srcp0");        // Reg.
+    }
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     pc->load(f->stride, mem_ptr(fn.fetch_data(), REL_PATTERN(src.stride)));
@@ -275,9 +284,17 @@ void FetchSimplePatternPart::_init_part(const PipeFunction& fn, Gp& x, Gp& y) no
     pc->add(f->srcp1, f->srcp1, mem_ptr(fn.fetch_data(), REL_PATTERN(src.pixel_data)));
     pc->prefetch(mem_ptr(f->srcp1));
 
-    Gp cut = pc->new_gpz("@stride_cut");
-    pc->mul(cut.r32(), mem_ptr(fn.fetch_data(), REL_PATTERN(src.size.w)), int(bpp()));
-    pc->sub(f->stride, f->stride, cut);
+    if (is_rect_fill()) {
+      Gp cut = pc->new_gpz("@stride_cut");
+      pc->mul(cut.r32(), mem_ptr(fn.fetch_data(), REL_PATTERN(src.size.w)), int(bpp()));
+      pc->sub(f->stride, f->stride, cut);
+    }
+    else {
+      // srcp0 = srcp1 - tx * bpp, so `srcp0 + x * bpp` points to the pixel of the destination X.
+      Gp tx_offset = pc->new_gpz("@tx_offset");
+      pc->mul(tx_offset.r32(), mem_ptr(fn.fetch_data(), REL_PATTERN(simple.tx)), int(bpp()));
+      pc->sub(f->srcp0, f->srcp1, tx_offset);
+    }
   }
   else {
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -663,7 +680,13 @@ void FetchSimplePatternPart::advance_y() noexcept {
     // -------
 
     // That's the beauty of AABlit - no checks needed, no extend modes used.
-    pc->add(f->srcp1, f->srcp1, f->stride);
+    if (is_rect_fill()) {
+      pc->add(f->srcp1, f->srcp1, f->stride);
+    }
+    else {
+      // `srcp1` is calculated from `srcp0` when the next scanline starts.
+      pc->add(f->srcp0, f->srcp0, f->stride);
+    }
   }
   else {
     // Vertical Extend Mode Handling
@@ -731,9 +754,11 @@ void FetchSimplePatternPart::start_at_x(const Gp& x) noexcept {
     // Blit AA
     // -------
 
-    // TODO: [JIT] OPTIMIZATION: Relax this constraint.
-    // Rectangular blits only.
-    BL_ASSERT(is_rect_fill());
+    // A rectangular fill always starts at the X of the blit, which `srcp1` already points to.
+    if (!is_rect_fill()) {
+      pc->mov(f->srcp1, f->srcp0);                                   // f->srcp1 = f->srcp0;
+      pc->add_scaled(f->srcp1, x.clone_as(f->srcp1), int(bpp()));    // f->srcp1 += x * pattern.bpp;
+    }
   }
   else if (extend_x() == ExtendMode::kPad) {
     // Horizontal Pad
